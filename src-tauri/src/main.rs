@@ -10,6 +10,7 @@ mod accounts;
 mod badge;
 mod browser;
 mod config;
+mod filedrop;
 mod icon;
 mod permissions;
 mod rail;
@@ -40,6 +41,11 @@ fn main() {
         // mismo instante). Sigue sin conceder IPC a whatsapp.com: aquí solo se
         // aceptan las órdenes conocidas de `shell`.
         .register_uri_scheme_protocol("wrusp", |ctx, request| {
+            // Los ficheros que se acaban de soltar se sirven por aquí, porque
+            // el motor no se los entrega a la página (ver `filedrop`).
+            if let Some(respuesta) = filedrop::responder(ctx.app_handle(), request.uri()) {
+                return respuesta;
+            }
             shell::handle_uri(ctx.app_handle(), request.uri());
             tauri::http::Response::builder()
                 .status(204)
@@ -84,6 +90,7 @@ fn main() {
             config::debug_assert_identifier(app.handle());
             let cfg = config::load(app.handle());
             app.manage(ConfigState(Mutex::new(cfg)));
+            app.manage(filedrop::PendingDrop::default());
             shell::create(app.handle())?;
             theme::apply_theme(app.handle());
             tray::create(app.handle())?;

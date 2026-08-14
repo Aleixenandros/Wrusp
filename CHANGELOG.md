@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.2.0] — 2026-08-14
+
+### Añadido
+
+- **Arrastrar y soltar ficheros sobre un chat.** El motor entrega la ruta de lo que sueltas, pero no construye el fichero que la página necesita, así que soltar algo sobre un chat no hacía absolutamente nada. Ahora Wrusp recoge lo soltado y se lo entrega a WhatsApp en el punto exacto donde lo has soltado, con su nombre y su tipo. Solo se puede acceder a lo que acabas de soltar y durante unos segundos, así que la página no tiene forma de leer nada más del disco.
+
 ## [0.1.1] — 2026-08-14
 
 ### Corregido
@@ -36,5 +42,6 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 - En GNOME hace falta la extensión AppIndicator para ver el icono de la bandeja; es comportamiento del escritorio, no de la aplicación.
 - Los binarios de Windows y macOS no van firmados.
 
+[0.2.0]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Aleixenandros/Wrusp/releases/tag/v0.1.0

@@ -509,9 +509,6 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
     let handle = app.clone();
 
     let builder = WebviewBuilder::new(view_label(&account.id), WebviewUrl::External(account_url()))
-        // Sin esto, Tauri captura los ficheros que sueltas y la página nunca
-        // los recibe: arrastrar un archivo a un chat no hacía nada.
-        .disable_drag_drop_handler()
         .on_navigation(move |url| {
             if url.scheme() == "wrusp" {
                 handle_command(&handle, url);
@@ -541,6 +538,7 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .initialization_script(aislado(browser::hide_native_app_promo_script()))
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))
         .initialization_script(aislado(rail::runtime_script(&account.id)))
+        .initialization_script(aislado(crate::filedrop::SCRIPT.to_owned()))
         // Las descargas van a la carpeta configurada en ajustes.
         .on_download(|webview, event| {
             if let tauri::webview::DownloadEvent::Requested { destination, .. } = event {
@@ -573,6 +571,33 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
     // navegador no admite notas de voz ni cámara— ni nos entrega las
     // notificaciones del service worker.
     crate::permissions::configure(app, &view, &account.id);
+
+    // El motor entrega el soltado con la ruta del fichero, pero sin construir
+    // el `File` que espera la página, así que arrastrar algo a un chat no hacía
+    // nada. Aquí se recogen las rutas y se le pasan a la vista (ver `filedrop`).
+    let handle = app.clone();
+    let etiqueta = view_label(&account.id);
+    view.on_webview_event(move |event| {
+        let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = event
+        else {
+            return;
+        };
+        if crate::filedrop::registrar(&handle, paths.clone()) == 0 {
+            return;
+        }
+        // La posición viene en píxeles físicos y la página razona en CSS.
+        let escala = handle
+            .get_window(MAIN_WINDOW)
+            .and_then(|w| w.scale_factor().ok())
+            .unwrap_or(1.0);
+        let (x, y) = (position.x / escala, position.y / escala);
+        if let Some(vista) = handle.get_webview(&etiqueta) {
+            let _ = vista.eval(format!(
+                "window.__wruspSoltar && window.__wruspSoltar({x}, {y})"
+            ));
+        }
+    });
+
     Ok(())
 }
 
