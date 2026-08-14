@@ -73,6 +73,10 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             settings.set_enable_media_capabilities(true);
             // Contenido cifrado: algunos flujos de medios lo piden.
             settings.set_enable_encrypted_media(true);
+            // Portapapeles: WebKitGTK lo trae cerrado a JavaScript, así que
+            // WhatsApp no podía leer lo que se pega ni escribir al copiar.
+            // Pegar una captura con Ctrl+V no enviaba nada al chat.
+            settings.set_javascript_can_access_clipboard(true);
         }
 
         // ── Permiso de notificaciones, concedido de antemano ────

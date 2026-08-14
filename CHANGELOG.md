@@ -8,6 +8,7 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 
 ### Corregido
 
+- **El motor deja de cerrarle el portapapeles a la página.** WebKitGTK bloquea por defecto el acceso de JavaScript al portapapeles, así que WhatsApp no podía leer lo que se pega ni escribir al copiar.
 - **Los recursos internos de WhatsApp dejan de abrirse en el navegador.** La vista solo admitía `web.whatsapp.com`, así que lo que WhatsApp carga dentro desde otros dominios suyos —el visor de PDF en `webtp.whatsapp.net` y el mantenimiento de caché en `flows.whatsapp.net`— se cancelaba y acababa como pestañas sueltas en el navegador cada poco rato. Ahora se cargan donde deben, y con ellos vuelven a verse los PDF dentro de la aplicación. Los enlaces de un chat y la web pública de WhatsApp se siguen abriendo fuera.
 
 ## [0.1.0] — 2026-08-14
