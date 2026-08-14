@@ -1,0 +1,212 @@
+name: CI
+
+# CI separado del release (build.yml). build.yml solo se dispara con tags v*
+# y publica el release; aquí validamos PRs y pushes a main para no fusionar
+# cambios sin pasar por compilación, tests y lint.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancela runs anteriores del mismo ref para no acumular ejecuciones cuando
+# un PR recibe varios pushes seguidos.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Sin incremental ni símbolos de
+# depuración, los runners conservan margen de sobra para compilar.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # ── Job principal: check + test + fmt en Linux ────────────────────
+  lint-test:
+    runs-on: ubuntu-latest
+    name: Lint & test · Linux
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # El toolchain lo dicta `src-tauri/rust-toolchain.toml` (fuente única).
+      # Con un canal flotante el runner podría traer un Rust más nuevo que el
+      # local y romper el build sin haber tocado código.
+      - name: Leer el toolchain fijado
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/channel=\1/p' src-tauri/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          cache-targets: false
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config
+
+      - name: cargo fmt (bloqueante)
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets --locked
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  # ── Clippy ────────────────────────────────────────────────────────
+  # Baseline `-D warnings` bloqueante desde el primer commit: sin deuda que
+  # amnistiar. Pedantic queda como aviso permanente, nunca bloqueante.
+  clippy:
+    runs-on: ubuntu-latest
+    name: Clippy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Leer el toolchain fijado
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/channel=\1/p' src-tauri/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          components: clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          cache-targets: false
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config
+
+      - name: cargo clippy (baseline, bloqueante)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo clippy (pedantic, advisory)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -W clippy::pedantic
+        continue-on-error: true
+
+  # ── Regresión de plataforma: solo cargo check ─────────────────────
+  # Más ligero que el job Linux; detecta roturas específicas de SO antes
+  # de publicar con build.yml. Windows y macOS no requieren dependencias
+  # de sistema extra para `cargo check` de Tauri.
+  platform-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            label: Windows
+          - platform: macos-latest
+            label: macOS
+    runs-on: ${{ matrix.platform }}
+    name: Platform check · ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Leer el toolchain fijado
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/channel=\1/p' src-tauri/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          cache-targets: false
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
+
+  # ── Cadena de suministro ──────────────────────────────────────────
+  # ¿Alguna dependencia tiene aviso de seguridad? ¿Entró una licencia
+  # incompatible o una fuente que no es crates.io? El SBOM se publica como
+  # artefacto: sin inventario no se puede responder «¿me afecta este CVE?»
+  # sobre una versión ya distribuida.
+  supply-chain:
+    runs-on: ubuntu-latest
+    name: Cadena de suministro
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Leer el toolchain fijado
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/channel=\1/p' src-tauri/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+
+      - name: Install cargo-deny + cargo-cyclonedx
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2
+        with:
+          tool: cargo-deny,cargo-cyclonedx
+
+      # Bloqueante: un aviso de seguridad no se fusiona sin decidirlo antes.
+      - name: cargo-deny (avisos de seguridad)
+        working-directory: src-tauri
+        run: cargo deny --all-features check advisories
+
+      # Licencias, duplicados y procedencia. Advisory: el árbol de Tauri
+      # arrastra duplicados que no dependen de nosotros.
+      - name: cargo-deny (licencias, bans y fuentes)
+        working-directory: src-tauri
+        run: cargo deny --all-features check bans licenses sources
+        continue-on-error: true
+
+      - name: SBOM (CycloneDX)
+        run: |
+          mkdir -p sbom
+          (cd src-tauri && cargo cyclonedx --format json --all-features)
+          find src-tauri -name '*.cdx.json' -exec cp {} sbom/ \;
+
+      - name: Publicar el SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom/
+          if-no-files-found: error

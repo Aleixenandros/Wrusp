@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wrusp</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">W</div>
+        <div>
+          <h1>Wrusp</h1>
+          <p class="subtitle">WhatsApp no oficial para Linux</p>
+        </div>
+      </div>
+      <div class="theme-switch" role="group" aria-label="Tema">
+        <button data-mode="system" title="Seguir al sistema">Auto</button>
+        <button data-mode="light" title="Modo claro">☀</button>
+        <button data-mode="dark" title="Modo oscuro">☾</button>
+      </div>
+    </header>
+
+    <section class="accounts">
+      <h2>Cuentas</h2>
+      <ul id="account-list"></ul>
+      <p id="empty" class="empty" hidden>
+        Todavía no hay cuentas. Añade la primera aquí abajo.
+      </p>
+      <form id="add-form">
+        <input
+          id="add-name"
+          type="text"
+          placeholder="Nombre de la cuenta (p. ej. Personal)"
+          autocomplete="off"
+          maxlength="40"
+        />
+        <button type="submit" class="primary">Añadir cuenta</button>
+      </form>
+      <p class="hint">
+        Cada cuenta mantiene su propia sesión de WhatsApp Web, aislada del
+        resto. La primera vez tendrás que escanear el código QR desde el móvil.
+      </p>
+    </section>
+
+    <section class="icon-picker">
+      <details id="icon-details">
+        <summary>
+          <span>Icono de la aplicación</span>
+          <img id="icon-current" class="icon-current" alt="" />
+        </summary>
+        <input
+          id="icon-search"
+          type="text"
+          placeholder="Buscar icono (p. ej. orange, wrusp, business…)"
+          autocomplete="off"
+        />
+        <div id="icon-grid" class="icon-grid"></div>
+      </details>
+    </section>
+
+    <section class="folders">
+      <details>
+        <summary>Carpetas</summary>
+        <label class="folder-row">
+          <span>Descargas</span>
+          <input id="download-dir" type="text" placeholder="" autocomplete="off" />
+          <button type="button" data-pick="download-dir">Elegir…</button>
+        </label>
+        <label class="folder-row">
+          <span>Temporales</span>
+          <input id="temp-dir" type="text" placeholder="" autocomplete="off" />
+          <button type="button" data-pick="temp-dir">Elegir…</button>
+        </label>
+        <p class="hint">
+          Déjalas vacías para usar las del sistema. El cambio de temporales se
+          aplica al reiniciar Wrusp.
+        </p>
+        <p id="folder-error" class="error" hidden></p>
+      </details>
+    </section>
+
+    <section class="behaviour">
+      <label class="toggle">
+        <input data-toggle="closeToTray" type="checkbox" />
+        <span>Al cerrar la ventana, seguir en la bandeja</span>
+      </label>
+      <label class="toggle">
+        <input data-toggle="notifications" type="checkbox" />
+        <span>Avisar de mensajes nuevos con una notificación</span>
+      </label>
+      <p class="hint">Los avisos son genéricos: CEF no expone a la aplicación el contenido de las notificaciones del service worker.</p>
+    </section>
+
+    <section class="shortcuts">
+      <details>
+        <summary>Atajos de teclado</summary>
+        <ul class="keys">
+          <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd><span>Cambiar de cuenta</span></li>
+          <li><kbd>Ctrl</kbd>+<kbd>P</kbd><span>Ajustes</span></li>
+          <li><kbd>Ctrl</kbd>+<kbd>U</kbd><span>Añadir cuenta</span></li>
+          <li><kbd>Ctrl</kbd>+<kbd>W</kbd><span>Ocultar en la bandeja</span></li>
+          <li><kbd>Ctrl</kbd>+<kbd>Q</kbd><span>Salir</span></li>
+          <li><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd><span>Zoom (se recuerda por cuenta)</span></li>
+          <li><kbd>F5</kbd><span>Recargar la vista</span></li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="about">
+      <details>
+        <summary>Acerca de Wrusp</summary>
+        <p class="about-version">
+          Versión <strong id="about-version">…</strong>
+          <span id="about-update" class="about-update"></span>
+        </p>
+        <p class="hint">
+          Cliente de escritorio no oficial de WhatsApp, escrito en Rust con
+          Tauri. No está afiliado ni respaldado por WhatsApp ni Meta.
+        </p>
+        <div class="about-links">
+          <button type="button" id="check-updates">Comprobar actualizaciones</button>
+          <button type="button" data-link="repository">Código fuente</button>
+          <button type="button" data-link="issues">Informar de un fallo</button>
+          <button type="button" data-link="license">Licencia (Apache-2.0)</button>
+        </div>
+      </details>
+    </section>
+
+    <footer class="footer">
+      <p>
+        Cambia de cuenta desde la barra lateral. Al cerrar la ventana, Wrusp
+        sigue en la bandeja del sistema.
+      </p>
+    </footer>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>

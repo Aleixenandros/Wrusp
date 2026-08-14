@@ -1,0 +1,65 @@
+# Política de cadena de suministro (cargo-deny). La usa el job
+# «supply-chain» de ci.yml. Las excepciones se documentan aquí, con motivo:
+# una excepción sin justificación escrita es una excepción que nadie revisa.
+
+[advisories]
+# Todas las excepciones actuales son avisos «unmaintained» (crates archivados),
+# NO vulnerabilidades. Revisar la lista con cada actualización mayor de Tauri:
+# desaparecerán cuando la bandeja de Tauri migre de GTK3 y renueve transitivas.
+ignore = [
+  # gtk-rs GTK3: bindings archivados, pero AppIndicator/tray-icon todavía los
+  # necesita en Linux. Sin alternativa mientras ese stack no salte a GTK4.
+  # Detectado 2026-08-13 en el primer run de CI.
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  # proc-macro-error sin mantenedor; transitiva del ecosistema de macros GTK.
+  "RUSTSEC-2024-0370",
+  # unic-*: archivadas; transitivas de Tauri. Sin parche aguas arriba.
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+]
+
+[licenses]
+# Licencias permisivas habituales del ecosistema Tauri/GTK.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "0BSD",
+  # gtk-rs y bindings del sistema
+  "LGPL-2.1",
+  "LGPL-2.1-or-later",
+  "LGPL-3.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# El árbol de Tauri arrastra duplicados de versiones que no dependen de
+# nosotros; avisamos sin bloquear.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Todo viene de crates.io: no hay dependencias de git.
+allow-git = []

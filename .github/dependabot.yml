@@ -1,0 +1,16 @@
+# Actualizaciones automáticas de dependencias. Los PRs de Dependabot pasan
+# por el CI normal (ci.yml) antes de poder fusionarse.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

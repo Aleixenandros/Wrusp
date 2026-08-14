@@ -1,0 +1,5 @@
+# Fuente única del toolchain: el CI lee `channel` de aquí (mismo patrón que
+# Rustty). Fijado, no flotante: un Rust nuevo en el runner no debe poder
+# romper un build sin que haya cambiado el código.
+[toolchain]
+channel = "1.97.1"

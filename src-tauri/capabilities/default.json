@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capacidades de la vista de ajustes. Se concede por `webviews` y NO por `windows`: la comprobación es «webview coincide O ventana coincide», así que listar la ventana daría IPC también a las vistas de WhatsApp, que cargan una web remota.",
+  "webviews": ["settings"],
+  "permissions": ["core:default"]
+}

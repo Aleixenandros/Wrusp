@@ -1,0 +1,350 @@
+name: Build Wrusp
+
+on:
+  push:
+    tags:
+      - "v*"          # Lanzar al hacer: git tag v0.1.0 && git push --tags
+  workflow_dispatch:  # También se puede lanzar manualmente desde GitHub
+
+permissions:
+  contents: write     # Necesario para que tauri-action pueda crear el release
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # ── Gate de publicación ───────────────────────────────────────
+  # Corre ANTES que `build` y con `permissions: contents: read`. Si algo aquí
+  # falla, no se compila ni se publica nada.
+  #
+  # Comprueba dos cosas distintas:
+  #   1. La misma batería que el CI de PRs (check, test, clippy bloqueante).
+  #      Un tag puede apuntar a un commit que nunca pasó por CI.
+  #   2. Coherencia del tag: la versión del tag debe coincidir con
+  #      `Cargo.toml` y `tauri.conf.json`.
+  verify:
+    runs-on: ubuntu-latest
+    name: Verify release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # La versión de Rust sale de `src-tauri/rust-toolchain.toml`, nunca del
+      # canal flotante: con clippy bloqueante en este job, un Rust nuevo en el
+      # runner tumbaría la publicación sin que el código hubiera cambiado.
+      - name: Leer el toolchain fijado
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/channel=\1/p' src-tauri/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          cache-targets: false
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config
+
+      # El tag manda: si no cuadra con Cargo.toml / tauri.conf.json, el
+      # release se aborta antes de compilar nada.
+      - name: Coherencia del tag con la versión
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO=$(grep -m1 '^version = ' src-tauri/Cargo.toml | cut -d'"' -f2)
+          CONF=$(jq -r .version src-tauri/tauri.conf.json)
+
+          echo "tag=$TAG  Cargo.toml=$CARGO  tauri.conf.json=$CONF"
+          if [ "$TAG" != "$CARGO" ]; then
+            echo "::error::El tag v$TAG no coincide con Cargo.toml ($CARGO)."
+            exit 1
+          fi
+          if [ "$TAG" != "$CONF" ]; then
+            echo "::error::El tag v$TAG no coincide con tauri.conf.json ($CONF)."
+            exit 1
+          fi
+          # El changelog es la nota de la versión para quien la instala: si no
+          # está escrito, no se publica.
+          if ! grep -q "^## \[$TAG\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md no tiene una sección '## [$TAG]'."
+            exit 1
+          fi
+
+      - name: cargo fmt (bloqueante)
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets --locked
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: cargo clippy (bloqueante)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  # ── Build y empaquetado por plataforma ────────────────────────
+  # ubuntu-22.04 a propósito: la glibc contra la que se enlaza marca el
+  # mínimo soportado por el AppImage; compilar en la LTS vieja maximiza
+  # compatibilidad con distros no tan al día.
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target:   x86_64-unknown-linux-gnu
+            label:    Linux
+          - platform: windows-latest
+            target:   x86_64-pc-windows-msvc
+            label:    Windows
+          - platform: macos-latest
+            target:   aarch64-apple-darwin
+            label:    macOS (Apple Silicon)
+
+    runs-on: ${{ matrix.platform }}
+    name: Build · ${{ matrix.label }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Leer el toolchain fijado
+        id: rust
+        shell: bash
+        run: sed -n 's/^channel = "\(.*\)"/channel=\1/p' src-tauri/rust-toolchain.toml >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          cache-targets: false
+
+      - name: Preparar helper universal en macOS
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+
+      # `rpm` para el bundle .rpm; `zstd` para el paquete Arch.
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            rpm \
+            zstd
+
+      # Las notas del release son el changelog de esa versión: quien descarga
+      # quiere saber qué cambia, no leer «ver commits para detalles».
+      - name: Preparar notas del release
+        id: notas
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_NAME:0:1}" = "v" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            CUERPO=$(./scripts/changelog-section.sh "$VERSION")
+          else
+            CUERPO=""
+          fi
+          {
+            echo "cuerpo<<WRUSP_EOF"
+            echo "$CUERPO"
+            echo ""
+            echo "---"
+            echo ""
+            echo "Registro completo: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)"
+            echo "WRUSP_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── Build Tauri ───────────────────────────────────────────
+      # Proyecto sin Node: tauri-action detecta que no hay package.json y usa
+      # la CLI de Tauri por su cuenta. Con targets "all" en tauri.conf.json
+      # genera deb+rpm+AppImage en Linux, msi+nsis en Windows y dmg+app en
+      # macOS, y crea el release como borrador. Sin firma de código:
+      # en Windows avisará SmartScreen y en macOS hay que quitar la cuarentena.
+      - name: Build
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Solo publicar release cuando el disparador es un tag `v*`. En un
+          # `workflow_dispatch` desde `main`, con tagName vacío tauri-action
+          # se limita a compilar (smoke test) sin tocar releases.
+          tagName:      ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName:  ${{ startsWith(github.ref, 'refs/tags/') && format('Wrusp {0}', github.ref_name) || '' }}
+          releaseBody:  ${{ steps.notas.outputs.cuerpo }}
+          releaseDraft: true
+          prerelease:   false
+          args:         --target ${{ matrix.target }}
+
+      # ── Extra de Linux: empaquetar .pkg.tar.zst para Arch ─────
+      # Tauri no tiene target pacman; reusamos el .deb (mismo árbol)
+      # extrayéndolo y empaquetándolo de nuevo como paquete Arch.
+      - name: Build Arch Linux package
+        if: matrix.platform == 'ubuntu-22.04' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Ruta absoluta — luego hacemos `cd $WORK/root` y la relativa
+          # dejaría de resolver al escribir el .pkg.tar.zst.
+          BUNDLE_DIR="$(realpath src-tauri/target/${{ matrix.target }}/release/bundle)"
+          DEB=$(ls "$BUNDLE_DIR/deb"/*.deb | head -n1)
+          WORK=$(mktemp -d)
+
+          # Desempaqueta el .deb (rootfs) en $WORK/root
+          mkdir -p "$WORK/root"
+          dpkg-deb -x "$DEB" "$WORK/root"
+          cd "$WORK/root"
+
+          INSTALLED_SIZE=$(du -sb . | cut -f1)
+          BUILDDATE=$(date +%s)
+
+          # Metadatos del paquete pacman
+          cat > .PKGINFO <<EOF
+          pkgname = wrusp
+          pkgver = ${VERSION}-1
+          pkgdesc = Cliente de escritorio no oficial de WhatsApp para Linux
+          url = https://github.com/Aleixenandros/Wrusp
+          builddate = ${BUILDDATE}
+          packager = Aleixenandros <noreply@github.com>
+          size = ${INSTALLED_SIZE}
+          arch = x86_64
+          depend = gtk3
+          depend = libayatana-appindicator
+          EOF
+
+          # Construye .pkg.tar.zst (PKGINFO primero por convención)
+          OUT="$BUNDLE_DIR/Wrusp-${VERSION}-1-x86_64.pkg.tar.zst"
+          FILES=$(find . -type f -o -type l | sed 's|^\./||' | sort | sed '/^\.PKGINFO$/d')
+          tar --zstd -cf "$OUT" .PKGINFO $FILES
+
+          ls -la "$OUT"
+          # `gh` necesita contexto de repo; tras empaquetar seguimos dentro
+          # del rootfs temporal del .deb, que no contiene .git.
+          cd "$GITHUB_WORKSPACE"
+          gh release upload "${{ github.ref_name }}" "$OUT" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # ── Publicación ───────────────────────────────────────────────
+  publish_release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    name: Publish release
+    # `id-token` + `attestations` los exige `attest-build-provenance` (firma
+    # con OIDC contra el registro de procedencia). Se conceden aquí y solo aquí.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      # ── Manifiesto de checksums ───────────────────────────────
+      # Un sha256 leído de la misma página del release no protege de nada:
+      # quien pueda alterar los binarios altera también el número de al lado.
+      # Un manifiesto attestado rompe esa circularidad — la firma vive en el
+      # registro de procedencia de GitHub, fuera del release.
+      - name: Descargar los artefactos del release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-assets
+          gh release download "${GITHUB_REF_NAME}" \
+            --dir dist-assets --clobber --repo "${GITHUB_REPOSITORY}"
+          rm -f dist-assets/SHA256SUMS.txt
+          ls -la dist-assets
+
+      # Un release al que le faltan paquetes es peor que uno que falla: se
+      # publica en verde y nadie se entera. En la v1.0.0 los tres jobs dijeron
+      # «successfully uploaded» y aun así solo sobrevivió el paquete de Arch,
+      # con un SHA256SUMS.txt de una línea y una attestation que cubría ese
+      # único artefacto. Si falta alguno, aquí se para y el release se queda
+      # en borrador.
+      - name: Comprobar que están los ocho paquetes
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          FALTA=0
+          for PAQUETE in \
+            "Wrusp_${VERSION}_amd64.deb" \
+            "Wrusp-${VERSION}-1.x86_64.rpm" \
+            "Wrusp_${VERSION}_amd64.AppImage" \
+            "Wrusp_${VERSION}_aarch64.dmg" \
+            "Wrusp_${VERSION}_aarch64.app.tar.gz" \
+            "Wrusp_${VERSION}_x64_en-US.msi" \
+            "Wrusp_${VERSION}_x64-setup.exe" \
+            "Wrusp-${VERSION}-1-x86_64.pkg.tar.zst"
+          do
+            if [ ! -f "dist-assets/${PAQUETE}" ]; then
+              echo "::error::Falta ${PAQUETE} en el release."
+              FALTA=1
+            fi
+          done
+          [ "$FALTA" -eq 0 ]
+
+      - name: Generar SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd dist-assets
+          sha256sum -- * > ../SHA256SUMS.txt
+          cd ..
+          cat SHA256SUMS.txt
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" \
+            --draft=false \
+            --repo "${GITHUB_REPOSITORY}"
+
+      # Procedencia verificable: ata el manifiesto a este workflow, commit y
+      # runner. Como el manifiesto cubre todos los artefactos por hash,
+      # attestarlo a él los cubre a todos:
+      #   gh attestation verify Wrusp_x.y.z_amd64.deb --repo Aleixenandros/Wrusp
+      # Va DESPUÉS de publicar a propósito: si la emisión fallara, el release
+      # ya está disponible y solo queda este job en rojo.
+      - name: Attestation de procedencia del manifiesto
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: SHA256SUMS.txt

@@ -1,0 +1,532 @@
+/* Wrusp — ventana de gestión. Tema por variables + [data-theme]. */
+
+:root {
+  --bg: #f4f6f5;
+  --surface: #ffffff;
+  --border: #dde3e0;
+  --text: #16211c;
+  --text-dim: #5c6b64;
+  --accent: #1fa855;
+  --accent-hover: #178a45;
+  --accent-text: #ffffff;
+  --danger: #d63b3b;
+  --danger-hover: #b52f2f;
+}
+
+[data-theme="dark"] {
+  --bg: #10151a;
+  --surface: #1a2129;
+  --border: #2b343d;
+  --text: #e6ebe8;
+  --text-dim: #94a29b;
+  --accent: #22c063;
+  --accent-hover: #2ad871;
+  --accent-text: #06130b;
+  --danger: #ef6a6a;
+  --danger-hover: #ff8080;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+/* El contenido se desplaza como un todo: si la ventana se hace pequeña, se
+   baja con la rueda en vez de recortarse. */
+body {
+  min-height: 100%;
+  overflow-y: auto;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  user-select: none;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 20px;
+  gap: 18px;
+  /* La ventana es ancha (la comparte con las vistas de WhatsApp), pero los
+     ajustes se leen mejor en una columna estrecha. */
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+/* ── Cabecera ─────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+h1 {
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.subtitle {
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.theme-switch {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.theme-switch button {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.theme-switch button:hover {
+  color: var(--text);
+}
+
+.theme-switch button.active {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* ── Alta de cuentas ──────────────────────────────────── */
+#add-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+input[type="text"] {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+
+input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+button.primary {
+  border: none;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.primary:hover {
+  background: var(--accent-hover);
+}
+
+.hint {
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* ── Selector de icono ────────────────────────────────── */
+.icon-picker details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.icon-picker summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  list-style: none;
+}
+
+.icon-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.icon-current {
+  width: 26px;
+  height: 26px;
+}
+
+#icon-search {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.icon-grid {
+  margin-top: 10px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 6px;
+}
+
+.icon-grid button {
+  border: 2px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 5px;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.icon-grid button:hover {
+  border-color: var(--border);
+}
+
+.icon-grid button.active {
+  border-color: var(--accent);
+}
+
+.icon-grid img {
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+/* ── Carpetas ─────────────────────────────────────────── */
+.folders details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.folders summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.folder-row span {
+  flex: 0 0 84px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.folder-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+.folder-row button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.folder-row button:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.error {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+/* ── Comportamiento y atajos ──────────────────────────── */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.toggle + .toggle {
+  margin-top: 8px;
+}
+
+.toggle.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.shortcuts details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.shortcuts summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.keys {
+  list-style: none;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.keys li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.keys span {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+
+kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+/* ── Lista de cuentas ─────────────────────────────────── */
+.accounts {
+  display: flex;
+  flex-direction: column;
+}
+
+.accounts h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+/* Sin scroll propio a propósito: la lista crece y quien se desplaza es la
+   página entera, para no tener dos barras compitiendo. */
+#account-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.account .avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.account .name {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account input.rename {
+  flex: 1;
+  padding: 6px 8px;
+}
+
+.account .actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.account .actions button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.account .actions button:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.account .actions button.open {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.account .actions button.open:hover {
+  background: var(--accent-hover);
+}
+
+.account .actions button.danger {
+  color: var(--danger);
+}
+
+.account .actions button.danger:hover {
+  color: var(--danger-hover);
+  border-color: var(--danger);
+}
+
+.empty {
+  color: var(--text-dim);
+  text-align: center;
+  padding: 28px 0;
+  font-size: 14px;
+}
+
+/* ── Acerca de ────────────────────────────────────────── */
+.about details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.about summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.about-version {
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.about-update {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.about-update.nueva {
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.about-update.error {
+  color: var(--danger);
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.about-links button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.about-links button:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* ── Pie ──────────────────────────────────────────────── */
+.footer {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+}
