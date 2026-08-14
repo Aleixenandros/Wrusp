@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.1.1] — 2026-08-14
+
+### Corregido
+
+- **Los recursos internos de WhatsApp dejan de abrirse en el navegador.** La vista solo admitía `web.whatsapp.com`, así que lo que WhatsApp carga dentro desde otros dominios suyos —el visor de PDF en `webtp.whatsapp.net` y el mantenimiento de caché en `flows.whatsapp.net`— se cancelaba y acababa como pestañas sueltas en el navegador cada poco rato. Ahora se cargan donde deben, y con ellos vuelven a verse los PDF dentro de la aplicación. Los enlaces de un chat y la web pública de WhatsApp se siguen abriendo fuera.
+
 ## [0.1.0] — 2026-08-14
 
 ### Añadido
@@ -29,4 +35,5 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 - En GNOME hace falta la extensión AppIndicator para ver el icono de la bandeja; es comportamiento del escritorio, no de la aplicación.
 - Los binarios de Windows y macOS no van firmados.
 
+[0.1.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Aleixenandros/Wrusp/releases/tag/v0.1.0

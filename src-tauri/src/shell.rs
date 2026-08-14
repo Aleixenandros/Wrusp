@@ -66,11 +66,16 @@ fn account_navigation_allowed(url: &tauri::Url) -> bool {
     if url.as_str() == "about:blank" {
         return true;
     }
-    if url.scheme() == "https"
-        && url.host_str() == Some("web.whatsapp.com")
-        && url.port_or_known_default() == Some(443)
-    {
-        return true;
+    if url.scheme() == "https" && url.port_or_known_default() == Some(443) {
+        let host = url.host_str().unwrap_or_default();
+        // La página en sí, y la infraestructura que carga dentro en iframes:
+        // el visor de PDF vive en `webtp.whatsapp.net` y el mantenimiento de
+        // caché en `flows.whatsapp.net`. Tratarlos como enlaces externos los
+        // cancelaba y los abría en el navegador, así que los PDF no se veían y
+        // salían pestañas solas cada poco.
+        if host == "web.whatsapp.com" || host.ends_with(".whatsapp.net") {
+            return true;
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -617,16 +622,33 @@ mod tests {
     use super::{account_navigation_allowed, unread_count_from_title};
 
     #[test]
-    fn account_views_only_accept_the_exact_whatsapp_origin() {
+    fn account_views_only_accept_whatsapp_origins() {
         let whatsapp = "https://web.whatsapp.com/".parse().unwrap();
+        // Infraestructura que la propia página carga en iframes.
+        let pdf = "https://webtp.whatsapp.net/pdf-viewer/?locale=es_ES"
+            .parse()
+            .unwrap();
+        let flows = "https://flows.whatsapp.net/flows/cache_management/"
+            .parse()
+            .unwrap();
+
         let subdomain = "https://assets.web.whatsapp.com/".parse().unwrap();
         let lookalike = "https://web.whatsapp.com.example.org/".parse().unwrap();
+        // No basta con que el dominio termine parecido.
+        let net_lookalike = "https://malo.whatsapp.net.example.org/".parse().unwrap();
+        // La web pública no es la aplicación: sus enlaces se abren fuera.
+        let publica = "https://www.whatsapp.com/".parse().unwrap();
         let insecure = "http://web.whatsapp.com/".parse().unwrap();
         let custom_port = "https://web.whatsapp.com:444/".parse().unwrap();
 
         assert!(account_navigation_allowed(&whatsapp));
+        assert!(account_navigation_allowed(&pdf));
+        assert!(account_navigation_allowed(&flows));
+
         assert!(!account_navigation_allowed(&subdomain));
         assert!(!account_navigation_allowed(&lookalike));
+        assert!(!account_navigation_allowed(&net_lookalike));
+        assert!(!account_navigation_allowed(&publica));
         assert!(!account_navigation_allowed(&insecure));
         assert!(!account_navigation_allowed(&custom_port));
     }
