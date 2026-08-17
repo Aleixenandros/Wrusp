@@ -24,6 +24,17 @@ use std::sync::Mutex;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 fn main() {
+    // El renderizador DMA-BUF de WebKitGTK rompe la lectura de fotogramas de
+    // vídeo desde canvas/WebGL (2D devuelve negro; WebGL, ruido de textura sin
+    // inicializar), que es como WhatsApp genera miniaturas y previsualizaciones:
+    // los vídeos salían con «no se puede reproducir» o nieve. Desactivarlo
+    // repara ese camino y además rinde mejor al desplazarse (medido: 75→97 FPS
+    // en una página tipo chat). Solo si el usuario no lo ha fijado ya fuera.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.
     config::apply_temp_dir_env();

@@ -57,11 +57,24 @@ manda vídeo en H.264 con audio AAC, así que si un vídeo no arranca instala lo
 plugins correspondientes:
 
 ```bash
-# Fedora (repositorio fedora-cisco-openh264, activo por defecto)
-sudo dnf install gstreamer1-plugin-openh264 gstreamer1-plugins-good
+# Fedora — necesita RPM Fusion (https://rpmfusion.org/Configuration):
+# el openh264 que trae Fedora solo decodifica el perfil baseline, y buena
+# parte de los vídeos de WhatsApp usan Main o High.
+sudo dnf install libavcodec-freeworld gstreamer1-plugins-good
 
 # Debian / Ubuntu
 sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good
+```
+
+En Fedora, `mesa-va-drivers-freeworld` (también de RPM Fusion) añade además
+decodificación por hardware en GPUs AMD.
+
+Si instalas códecs con Wrusp ya instalado y el vídeo sigue sin arrancar,
+borra la caché del registro de GStreamer y vuelve a abrir la aplicación —
+GStreamer solo reescanea si cambia el fichero del plugin, no sus librerías:
+
+```bash
+rm ~/.cache/gstreamer-1.0/registry.*.bin
 ```
 
 Wrusp no distribuye códecs: los pone la distribución.

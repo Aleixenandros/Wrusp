@@ -4,6 +4,14 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.2.1] — 2026-08-17
+
+### Corregido
+
+- **Los vídeos vuelven a reproducirse y las miniaturas dejan de salir con nieve.** El renderizador DMA-BUF de WebKitGTK no deja leer los fotogramas de vídeo desde canvas ni WebGL —el primero devuelve negro y el segundo, ruido de textura sin inicializar—, y esa lectura es justo la vía por la que WhatsApp genera miniaturas y previsualizaciones: según el vídeo, salía nieve o un «no se puede reproducir el video». Wrusp lo desactiva al arrancar (solo en Linux, y respetando el valor si ya lo has fijado tú fuera).
+- **El desplazamiento dentro de los chats va más fluido.** Mismo origen y mismo remedio: sin el renderizador DMA-BUF, una página tipo chat con miles de mensajes pasa de 75 a 97 FPS.
+- El README recomendaba en Fedora el plugin openh264, que solo decodifica el perfil baseline de H.264: bastantes vídeos de WhatsApp usan Main o High y no arrancaban o se veían a medias. Las instrucciones apuntan ahora a `libavcodec-freeworld` (RPM Fusion), con el aviso de limpiar la caché del registro de GStreamer si los códecs llegan después que la aplicación.
+
 ## [0.2.0] — 2026-08-14
 
 ### Añadido
@@ -42,6 +50,7 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 - En GNOME hace falta la extensión AppIndicator para ver el icono de la bandeja; es comportamiento del escritorio, no de la aplicación.
 - Los binarios de Windows y macOS no van firmados.
 
+[0.2.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Aleixenandros/Wrusp/releases/tag/v0.1.0
