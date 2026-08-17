@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.0] — 2026-08-17
+
+### Corregido
+
+- **Los vídeos vuelven a reproducirse: se oculta la parte de vídeo de WebCodecs.** WebKitGTK anuncia `VideoDecoder` y asegura soportar H.264, pero su decodificación real no emite un solo fotograma (240 unidades válidas → 0 fotogramas y «Decode error», medido con arnés propio). WhatsApp Web, al verse en Chrome con WebCodecs disponible, elige su reproductor moderno sobre esa API: el play no hacía nada y el fotograma no se movía aunque el tiempo corriera. Esto explica también por qué «al principio funcionaba sin tocar nada»: lo que cambió no fue Wrusp, fue WhatsApp desplegando ese reproductor. Sin la API a la vista, la página cae al reproductor clásico `<video>`/MSE, que funciona. El audio (`AudioDecoder`) se deja intacto: las notas de voz no presentaban síntomas.
+
+### Añadido
+
+- **Registro consultable desde ajustes.** Todo lo que la aplicación y el motor escriben —incluida la consola JavaScript de WhatsApp Web y los avisos de GStreamer— queda en `wrusp.log`, en una carpeta configurable (por defecto `~/.local/state/wrusp/logs`) con botón para abrirla desde preferencias. Rotación sencilla a los 5 MB. Pensado para que la próxima vez que un vídeo no arranque, el porqué esté escrito en un sitio que se pueda mirar.
+
 ## [0.2.2] — 2026-08-17
 
 ### Corregido
@@ -56,6 +66,7 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 - En GNOME hace falta la extensión AppIndicator para ver el icono de la bandeja; es comportamiento del escritorio, no de la aplicación.
 - Los binarios de Windows y macOS no van firmados.
 
+[0.3.0]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.1...v0.2.0

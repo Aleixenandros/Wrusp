@@ -77,6 +77,10 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             // WhatsApp no podía leer lo que se pega ni escribir al copiar.
             // Pegar una captura con Ctrl+V no enviaba nada al chat.
             settings.set_javascript_can_access_clipboard(true);
+            // La consola de la página sale por stdout, que `logs` ya dejó
+            // apuntando al fichero de registro: los errores del reproductor
+            // de WhatsApp quedan consultables desde ajustes.
+            settings.set_enable_write_console_messages_to_stdout(true);
         }
 
         // ── Permiso de notificaciones, concedido de antemano ────

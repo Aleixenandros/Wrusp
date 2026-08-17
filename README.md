@@ -17,6 +17,8 @@ Wrusp envuelve WhatsApp Web en un webview nativo y añade lo que la web no ofrec
 - **Bandeja del sistema** — cerrar la ventana la oculta; Wrusp sigue recibiendo mensajes desde el tray.
 - **Tema claro / oscuro / sistema** — aplicado tanto a la app como al propio WhatsApp Web.
 - **Instancia única** — relanzar el binario enfoca la ventana existente.
+- **Registro consultable** — la aplicación, el motor y la consola de WhatsApp
+  Web escriben en un log con carpeta configurable desde ajustes.
 - **Sin Node** — el frontend de gestión es HTML/CSS/JS estático embebido.
 
 > ⚠️ Wrusp no está afiliado, asociado ni respaldado por WhatsApp ni Meta.

@@ -1,6 +1,6 @@
 [package]
 name = "wrusp"
-version = "0.2.2"
+version = "0.3.0"
 description = "Cliente de escritorio no oficial de WhatsApp para Linux"
 authors = ["aleixenandros"]
 license = "Apache-2.0"
@@ -35,3 +35,7 @@ png = "0.18.1"
 # concederlos por la API nativa (ver `permissions`).
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
+
+# Redirección de stdout/stderr al fichero de registro (ver `logs`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

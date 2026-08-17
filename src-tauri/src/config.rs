@@ -53,6 +53,9 @@ pub struct AppConfig {
     /// Carpeta de temporales. Vacío = la del sistema (TMPDIR, normalmente /tmp).
     #[serde(default)]
     pub temp_dir: String,
+    /// Carpeta de registros. Vacío = XDG state (~/.local/state/wrusp/logs).
+    #[serde(default)]
+    pub log_dir: String,
     /// Al cerrar la ventana, ¿seguir vivo en la bandeja? Si es `false`, cerrar
     /// termina la aplicación.
     #[serde(default = "default_true")]
@@ -75,6 +78,8 @@ pub struct Folders {
     pub download_default: String,
     pub temp_dir: String,
     pub temp_default: String,
+    pub log_dir: String,
+    pub log_default: String,
 }
 
 fn system_download_dir() -> PathBuf {
@@ -118,13 +123,7 @@ pub fn download_dir(app: &AppHandle) -> PathBuf {
 /// lee el JSON directamente en vez de usar el estado de Tauri, que aún no
 /// existe.
 pub fn apply_temp_dir_env() {
-    let Some(dir) = data_config_file() else {
-        return;
-    };
-    let Ok(raw) = fs::read_to_string(dir) else {
-        return;
-    };
-    let Ok(cfg) = serde_json::from_str::<AppConfig>(&raw) else {
+    let Some(cfg) = load_from_disk() else {
         return;
     };
     if cfg.temp_dir.is_empty() {
@@ -133,6 +132,13 @@ pub fn apply_temp_dir_env() {
     if fs::create_dir_all(&cfg.temp_dir).is_ok() {
         std::env::set_var("TMPDIR", &cfg.temp_dir);
     }
+}
+
+/// Configuración leída directamente del disco, para lo que corre antes de que
+/// exista la aplicación de Tauri (temporales, registros).
+pub fn load_from_disk() -> Option<AppConfig> {
+    let raw = fs::read_to_string(data_config_file()?).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 /// Identificador del bundle. Tauri nombra con él los directorios de datos y de
@@ -174,6 +180,8 @@ pub fn get_folders(state: tauri::State<'_, ConfigState>) -> Folders {
         download_default: system_download_dir().display().to_string(),
         temp_dir: cfg.temp_dir.clone(),
         temp_default: std::env::temp_dir().display().to_string(),
+        log_dir: cfg.log_dir.clone(),
+        log_default: crate::logs::default_dir().display().to_string(),
     }
 }
 
@@ -211,6 +219,28 @@ pub fn set_temp_dir(app: AppHandle, path: String) -> Result<(), String> {
     cfg.temp_dir = path;
     save(&app, &cfg);
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_log_dir(app: AppHandle, path: String) -> Result<(), String> {
+    validate_dir(&path)?;
+    let state = app.state::<ConfigState>();
+    let mut cfg = state.0.lock().unwrap();
+    cfg.log_dir = path;
+    save(&app, &cfg);
+    Ok(())
+}
+
+/// Abre la carpeta de registros en el gestor de ficheros.
+#[tauri::command]
+pub fn open_log_dir(state: tauri::State<'_, ConfigState>) -> Result<(), String> {
+    let dir = crate::logs::effective_dir(&state.0.lock().unwrap().log_dir);
+    fs::create_dir_all(&dir).map_err(|e| format!("No se pudo crear la carpeta: {e}"))?;
+    std::process::Command::new(ABRIDOR)
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("No se pudo abrir la carpeta: {e}"))
 }
 
 /// Interruptores simples de la página de ajustes.

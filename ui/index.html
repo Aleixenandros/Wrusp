@@ -74,9 +74,15 @@
           <input id="temp-dir" type="text" placeholder="" autocomplete="off" />
           <button type="button" data-pick="temp-dir">Elegir…</button>
         </label>
+        <label class="folder-row">
+          <span>Registros</span>
+          <input id="log-dir" type="text" placeholder="" autocomplete="off" />
+          <button type="button" data-pick="log-dir">Elegir…</button>
+          <button type="button" id="open-logs" title="Abrir la carpeta de registros">Abrir</button>
+        </label>
         <p class="hint">
-          Déjalas vacías para usar las del sistema. El cambio de temporales se
-          aplica al reiniciar Wrusp.
+          Déjalas vacías para usar las del sistema. Los cambios de temporales y
+          registros se aplican al reiniciar Wrusp.
         </p>
         <p id="folder-error" class="error" hidden></p>
       </details>

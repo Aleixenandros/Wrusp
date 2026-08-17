@@ -17,6 +17,8 @@ Wrusp wraps WhatsApp Web in a native webview and adds what the web version doesn
 - **System tray** — closing the window hides it; Wrusp keeps receiving messages from the tray.
 - **Light / dark / system theme** — applied to the app and to WhatsApp Web itself.
 - **Single instance** — launching the binary again focuses the existing window.
+- **Inspectable log** — the app, the engine and the WhatsApp Web console write
+  to a log file, with the folder configurable from settings.
 - **No Node** — the settings frontend is plain embedded HTML/CSS/JS.
 
 > ⚠️ Wrusp is not affiliated with, associated with, or endorsed by WhatsApp or

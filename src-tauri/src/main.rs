@@ -12,6 +12,7 @@ mod browser;
 mod config;
 mod filedrop;
 mod icon;
+mod logs;
 mod permissions;
 mod rail;
 mod runtime;
@@ -31,6 +32,10 @@ fn main() {
     // quedaba clavado en el póster con el tiempo corriendo. El renderizador
     // por defecto reproduce bien; los vídeos que no arrancan son cosa de
     // códecs del sistema (ver README).
+
+    // Lo primero de todo: desde aquí, stdout y stderr quedan en el fichero de
+    // registro y los procesos del webview lo heredan.
+    logs::init();
 
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.
@@ -88,6 +93,8 @@ fn main() {
             config::get_folders,
             config::set_download_dir,
             config::set_temp_dir,
+            config::set_log_dir,
+            config::open_log_dir,
             config::pick_folder,
             config::get_toggles,
             config::set_toggle,

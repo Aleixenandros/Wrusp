@@ -65,6 +65,28 @@ pub fn hide_native_app_promo_script() -> String {
         .to_string()
 }
 
+/// Oculta la parte de vídeo de WebCodecs.
+///
+/// WebKitGTK anuncia `VideoDecoder` y su `isConfigSupported('avc1.…')`
+/// responde que sí, pero la decodificación real no emite un solo fotograma:
+/// 240 unidades de acceso H.264 válidas → 0 frames y «Decode error»
+/// (comprobado con arnés propio contra WebKitGTK 2.52). WhatsApp, viéndose en
+/// Chrome con WebCodecs disponible, elige su reproductor moderno y el vídeo
+/// queda muerto: el play no hace nada y el póster no se mueve aunque el tiempo
+/// avance. Sin la API a la vista, cae al reproductor `<video>`/MSE, que
+/// funciona (verificado: progresivo y MSE, todos los perfiles H.264).
+///
+/// Solo se retira el lado de vídeo: `AudioDecoder` se deja porque no hay
+/// síntomas en notas de voz y quitarlo podría romper lo que hoy funciona.
+pub fn hide_webcodecs_script() -> String {
+    r#"(function () {
+  for (const k of ['VideoDecoder', 'VideoEncoder', 'EncodedVideoChunk']) {
+    try { delete window[k]; } catch (e) { /* no redefinible: se queda */ }
+  }
+})();"#
+        .to_string()
+}
+
 pub fn disguise_script() -> String {
     format!(
         r#"(function () {{

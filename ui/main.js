@@ -94,6 +94,7 @@ const folderError = document.getElementById("folder-error");
 const FOLDER_FIELDS = [
   { id: "download-dir", command: "set_download_dir" },
   { id: "temp-dir", command: "set_temp_dir" },
+  { id: "log-dir", command: "set_log_dir" },
 ];
 
 function showFolderError(message) {
@@ -124,11 +125,22 @@ async function initFolders() {
   const defaults = {
     "download-dir": folders.downloadDefault,
     "temp-dir": folders.tempDefault,
+    "log-dir": folders.logDefault,
   };
   const values = {
     "download-dir": folders.downloadDir,
     "temp-dir": folders.tempDir,
+    "log-dir": folders.logDir,
   };
+
+  // El registro se consulta abriendo su carpeta en el gestor de ficheros.
+  document.getElementById("open-logs").addEventListener("click", async () => {
+    try {
+      await invoke("open_log_dir");
+    } catch (err) {
+      showFolderError(String(err));
+    }
+  });
 
   for (const field of FOLDER_FIELDS) {
     const input = document.getElementById(field.id);
