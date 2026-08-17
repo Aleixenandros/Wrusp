@@ -24,16 +24,13 @@ use std::sync::Mutex;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 fn main() {
-    // El renderizador DMA-BUF de WebKitGTK rompe la lectura de fotogramas de
-    // vídeo desde canvas/WebGL (2D devuelve negro; WebGL, ruido de textura sin
-    // inicializar), que es como WhatsApp genera miniaturas y previsualizaciones:
-    // los vídeos salían con «no se puede reproducir» o nieve. Desactivarlo
-    // repara ese camino y además rinde mejor al desplazarse (medido: 75→97 FPS
-    // en una página tipo chat). Solo si el usuario no lo ha fijado ya fuera.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
+    // Ojo: NO fijar `WEBKIT_DISABLE_DMABUF_RENDERER`. La 0.2.1 lo hacía y con
+    // él `requestVideoFrameCallback` no dispara nunca (medido: 0 callbacks
+    // frente a ~200 en 8 s sin la variable), y WhatsApp usa esa API para
+    // revelar el vídeo al llegar el primer fotograma: el reproductor se
+    // quedaba clavado en el póster con el tiempo corriendo. El renderizador
+    // por defecto reproduce bien; los vídeos que no arrancan son cosa de
+    // códecs del sistema (ver README).
 
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.

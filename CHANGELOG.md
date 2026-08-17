@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.2.2] — 2026-08-17
+
+### Corregido
+
+- **Revertida la desactivación del renderizador DMA-BUF de la 0.2.1**: resultó una regresión. Con esa variable, `requestVideoFrameCallback` no dispara nunca, y WhatsApp usa justo esa API para revelar el vídeo cuando llega el primer fotograma: el reproductor se quedaba clavado en el póster —siempre el mismo fotograma aunque el tiempo avanzara— y el botón de play parecía no hacer nada. Con el renderizador por defecto la reproducción, el MSE y la lectura de fotogramas funcionan; los vídeos que no arrancan son cuestión de códecs del sistema (ver README).
+
 ## [0.2.1] — 2026-08-17
 
 ### Corregido
@@ -50,6 +56,7 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 - En GNOME hace falta la extensión AppIndicator para ver el icono de la bandeja; es comportamiento del escritorio, no de la aplicación.
 - Los binarios de Windows y macOS no van firmados.
 
+[0.2.2]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.1.0...v0.1.1
