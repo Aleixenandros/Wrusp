@@ -199,6 +199,52 @@ pub fn runtime_script(own: &str) -> String {
     document.addEventListener('DOMContentLoaded', arrancar, {{ once: true }});
   }}
 
+  // ── Capas a pantalla completa ───────────────────────────────
+  // El hueco de la barra se abre con padding en `body` y ajustando `#app`,
+  // pero las capas `position: fixed` se anclan al viewport y lo ignoran: el
+  // visor de fotos quedaba con sus primeros 60 px debajo de la barra. Sus
+  // clases cambian en cada despliegue, así que no hay selector del que fiarse:
+  // se detectan por geometría —capa fija que cubre (casi) todo el viewport
+  // pegada al borde izquierdo— y se les hace el mismo hueco. Los menús y
+  // globos pequeños no pasan el filtro de tamaño y no se tocan.
+  function corregirCapas() {{
+    const w = st().width;
+    const cand = document.querySelectorAll(
+      'body > *, body > * > *, #app > *, #app > * > *, [data-animate-media-viewer]'
+    );
+    for (const el of cand) {{
+      if (el.dataset.wruspAjustado) continue;
+      if (el.id === 'wrusp-rail') continue;
+      let cs;
+      try {{ cs = getComputedStyle(el); }} catch (e) {{ continue; }}
+      if (cs.position !== 'fixed') continue;
+      const r = el.getBoundingClientRect();
+      if (r.left > 1 || r.width < innerWidth * 0.9 || r.height < innerHeight * 0.85) continue;
+      el.dataset.wruspAjustado = '1';
+      el.style.setProperty('left', w + 'px', 'important');
+      el.style.setProperty('width', 'calc(100vw - ' + w + 'px)', 'important');
+    }}
+  }}
+  let correccionPendiente = false;
+  const programarCorreccion = () => {{
+    if (correccionPendiente) return;
+    correccionPendiente = true;
+    requestAnimationFrame(() => {{
+      correccionPendiente = false;
+      try {{ corregirCapas(); }} catch (e) {{ /* mejor sin corrección que sin barra */ }}
+    }});
+  }};
+  const vigilarCapas = () => {{
+    if (!document.body) return;
+    programarCorreccion();
+    new MutationObserver(programarCorreccion).observe(document.body, {{
+      childList: true,
+      subtree: true,
+    }});
+  }};
+  if (document.body) vigilarCapas();
+  else document.addEventListener('DOMContentLoaded', vigilarCapas, {{ once: true }});
+
   // ── Atajos de teclado ───────────────────────────────────────
   // Se capturan en fase de captura porque WhatsApp Web se come muchas teclas.
   document.addEventListener('keydown', (ev) => {{

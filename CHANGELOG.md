@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.1] — 2026-08-17
+
+### Corregido
+
+- **El visor de fotos ya no queda cortado por la barra lateral.** La barra abre su hueco con padding en `body`, pero las capas fijas a pantalla completa —el visor de medios, entre otras— se anclan al viewport y lo ignoraban: sus primeros 60 píxeles quedaban debajo de la barra. Como las clases de WhatsApp cambian en cada despliegue, la corrección no depende de ningún selector: cualquier capa fija que cubra casi todo el viewport pegada al borde izquierdo recibe el mismo hueco automáticamente. Los menús y globos pequeños no se tocan.
+
 ## [0.3.0] — 2026-08-17
 
 ### Corregido
@@ -66,6 +72,7 @@ Los enlaces de descarga de cada versión están en [Releases](https://github.com
 - En GNOME hace falta la extensión AppIndicator para ver el icono de la bandeja; es comportamiento del escritorio, no de la aplicación.
 - Los binarios de Windows y macOS no van firmados.
 
+[0.3.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Aleixenandros/Wrusp/compare/v0.2.0...v0.2.1
