@@ -66,6 +66,18 @@ fn account_navigation_allowed(url: &tauri::Url) -> bool {
     if url.as_str() == "about:blank" {
         return true;
     }
+    // Descargar un fichero de un chat es, para el motor, navegar a un `blob:`
+    // con atributo `download`: WhatsApp descifra el adjunto en memoria y lo
+    // entrega así. El interior del blob es el origen que lo creó
+    // (`blob:https://web.whatsapp.com/<uuid>`): se aceptan solo los de la
+    // propia página, y WebKit convierte esa navegación en una descarga que
+    // acaba en `on_download` en vez de sustituir la vista.
+    if url.scheme() == "blob" {
+        return url
+            .path()
+            .parse::<tauri::Url>()
+            .is_ok_and(|origen| origen.scheme() != "blob" && account_navigation_allowed(&origen));
+    }
     if url.scheme() == "https" && url.port_or_known_default() == Some(443) {
         let host = url.host_str().unwrap_or_default();
         // La página en sí, y la infraestructura que carga dentro en iframes:
@@ -540,17 +552,31 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))
         .initialization_script(aislado(rail::runtime_script(&account.id)))
         .initialization_script(aislado(crate::filedrop::SCRIPT.to_owned()))
-        // Las descargas van a la carpeta configurada en ajustes.
+        // Cada descarga pregunta dónde guardarse; la carpeta configurada en
+        // ajustes es el punto de partida del diálogo.
         .on_download(|webview, event| {
-            if let tauri::webview::DownloadEvent::Requested { destination, .. } = event {
-                let dir = crate::config::download_dir(webview.app_handle());
-                if std::fs::create_dir_all(&dir).is_ok() {
-                    if let Some(name) = destination.file_name() {
-                        *destination = crate::config::unique_path(dir.join(name));
-                    }
+            let tauri::webview::DownloadEvent::Requested { destination, .. } = event else {
+                return true; // el resto de eventos no piden decisión
+            };
+            // wry propone «Descargas del sistema + nombre sugerido»; de la
+            // propuesta solo interesa el nombre.
+            let nombre = destination
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| String::from("descarga"));
+            let dir = crate::config::download_dir(webview.app_handle());
+            let _ = std::fs::create_dir_all(&dir);
+            match elegir_destino_descarga(&webview, &dir, &nombre) {
+                Some(ruta) => {
+                    eprintln!("wrusp: descarga aceptada en {}", ruta.display());
+                    *destination = ruta;
+                    true
+                }
+                None => {
+                    eprintln!("wrusp: descarga cancelada");
+                    false
                 }
             }
-            true
         });
 
     // Aislamiento de sesión por cuenta: en Linux, Tauri crea un `WebContext` de
@@ -600,6 +626,71 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
     });
 
     Ok(())
+}
+
+/// Destino de una descarga: diálogo nativo de «guardar como», partiendo de la
+/// carpeta configurada y con el nombre que sugiere la página. `None` = el
+/// usuario canceló y la descarga no ocurre.
+///
+/// Corre dentro de la señal con la que WebKit espera el destino, en el hilo
+/// principal: `run()` abre un bucle GTK anidado, así que la ventana sigue
+/// respondiendo mientras el diálogo está abierto.
+#[cfg(target_os = "linux")]
+fn elegir_destino_descarga(
+    webview: &tauri::Webview<crate::runtime::Runtime>,
+    dir: &std::path::Path,
+    nombre: &str,
+) -> Option<std::path::PathBuf> {
+    use gtk::prelude::{FileChooserExt, NativeDialogExt};
+
+    // Arnés de pruebas: sin nadie delante que pulse botones, la descarga se
+    // acepta sola en la carpeta configurada. Con un número de segundos se
+    // bombea antes el bucle GTK ese tiempo, que es lo que hace el diálogo
+    // mientras espera al usuario: comprueba que WebKit aguanta la espera
+    // dentro de su señal. Nunca se compila en release.
+    #[cfg(debug_assertions)]
+    if let Ok(valor) = std::env::var("WRUSP_TEST_AUTOSAVE") {
+        let fin =
+            std::time::Instant::now() + std::time::Duration::from_secs(valor.parse().unwrap_or(0));
+        while std::time::Instant::now() < fin {
+            while gtk::events_pending() {
+                gtk::main_iteration_do(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        return Some(crate::config::unique_path(dir.join(nombre)));
+    }
+
+    let Ok(ventana) = webview.window().gtk_window() else {
+        // Sin ventana GTK no hay diálogo posible: a la carpeta configurada.
+        return Some(crate::config::unique_path(dir.join(nombre)));
+    };
+    let dialogo = gtk::FileChooserNative::new(
+        Some("Guardar fichero"),
+        Some(&ventana),
+        gtk::FileChooserAction::Save,
+        Some("Guardar"),
+        Some("Cancelar"),
+    );
+    dialogo.set_modal(true);
+    dialogo.set_do_overwrite_confirmation(true);
+    let _ = dialogo.set_current_folder(dir);
+    dialogo.set_current_name(nombre);
+    let respuesta = dialogo.run();
+    (respuesta == gtk::ResponseType::Accept)
+        .then(|| dialogo.filename())
+        .flatten()
+}
+
+/// En Windows y macOS se conserva el comportamiento de siempre —a la carpeta
+/// configurada, sin preguntar— hasta que esas builds se verifiquen.
+#[cfg(not(target_os = "linux"))]
+fn elegir_destino_descarga(
+    _webview: &tauri::Webview<crate::runtime::Runtime>,
+    dir: &std::path::Path,
+    nombre: &str,
+) -> Option<std::path::PathBuf> {
+    Some(crate::config::unique_path(dir.join(nombre)))
 }
 
 /// Destruye la vista de una cuenta (al borrarla).
@@ -677,6 +768,25 @@ mod tests {
         assert!(!account_navigation_allowed(&publica));
         assert!(!account_navigation_allowed(&insecure));
         assert!(!account_navigation_allowed(&custom_port));
+    }
+
+    #[test]
+    fn blob_downloads_only_from_the_page_itself() {
+        // Así entrega WhatsApp los ficheros de un chat: navegación a un blob
+        // creado por la propia página, que WebKit convierte en descarga.
+        let propio = "blob:https://web.whatsapp.com/3f0a2b9c".parse().unwrap();
+
+        let ajeno = "blob:https://ejemplo.org/3f0a2b9c".parse().unwrap();
+        let publico = "blob:https://www.whatsapp.com/3f0a2b9c".parse().unwrap();
+        let anidado = "blob:blob:https://web.whatsapp.com/x".parse().unwrap();
+        let ilegible = "blob:no-es-una-url".parse().unwrap();
+
+        assert!(account_navigation_allowed(&propio));
+
+        assert!(!account_navigation_allowed(&ajeno));
+        assert!(!account_navigation_allowed(&publico));
+        assert!(!account_navigation_allowed(&anidado));
+        assert!(!account_navigation_allowed(&ilegible));
     }
 
     #[test]

@@ -4,6 +4,13 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.2] — 2026-08-18
+
+### Corregido
+
+- **Descargar un fichero de un chat vuelve a funcionar, y ahora pregunta dónde guardarlo.** WhatsApp entrega las descargas navegando a un `blob:` con atributo `download`, y el filtro de navegación de las vistas solo admitía `https`: la descarga se cancelaba antes de llegar al gestor y no pasaba absolutamente nada, fuera un PDF, una imagen o un vídeo (confirmado con arnés local: `blob:` y `data:` morían en el filtro; solo una descarga HTTP directa llegaba a guardarse). Ahora los `blob:` creados por la propia página se aceptan —los de cualquier otro origen se siguen rechazando— y WebKit los convierte en la descarga que son. Además, en vez de guardar en silencio, cada descarga abre el diálogo nativo de «guardar como», partiendo de la carpeta configurada en ajustes y del nombre que sugiere la página; cancelar el diálogo cancela la descarga, y todo queda anotado en el registro. En Windows y macOS se conserva el guardado directo en la carpeta configurada.
+- **Documentación de códecs en Fedora afinada tras un caso real.** El README omitía `gstreamer1-plugin-libav` en la línea de Fedora (es el plugin que expone `avdec_h264`; sin él, `libavcodec-freeworld` no aporta nada) y, sobre todo, no avisaba de que «volver a abrir la aplicación» exige salir de verdad: cerrar la ventana deja Wrusp vivo en la bandeja, relanzar el binario solo enfoca la instancia en marcha, y un proceso ya arrancado no relee el registro de GStreamer. Caso diagnosticado: códecs instalados con la aplicación abierta — el registro tardó día y medio en reescanearse solo y el proceso seguía siendo el anterior, así que solo se reproducía el perfil baseline (un vídeo de iPhone sí; los Main/High, clavados en el primer fotograma) pese a estar ya todo instalado. Verificado que con el registro al día `avdec_h264` decodifica un High 1080p60 real sin errores.
+
 ## [0.3.1] — 2026-08-17
 
 ### Corregido

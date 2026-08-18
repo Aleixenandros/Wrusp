@@ -1,6 +1,6 @@
 [package]
 name = "wrusp"
-version = "0.3.1"
+version = "0.3.2"
 description = "Cliente de escritorio no oficial de WhatsApp para Linux"
 authors = ["aleixenandros"]
 license = "Apache-2.0"
@@ -32,9 +32,12 @@ codegen-units = 1
 png = "0.18.1"
 
 # WebKitGTK viene con la captura de medios desactivada y sus permisos hay que
-# concederlos por la API nativa (ver `permissions`).
+# concederlos por la API nativa (ver `permissions`). GTK ya viene en el árbol
+# de Tauri con esta misma versión: se declara para el diálogo de «guardar
+# como» de las descargas (ver `shell`).
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
+gtk = "0.18"
 
 # Redirección de stdout/stderr al fichero de registro (ver `logs`).
 [target.'cfg(unix)'.dependencies]
