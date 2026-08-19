@@ -38,6 +38,118 @@ fn notification_origins() -> Vec<webkit2gtk::SecurityOrigin> {
     origins
 }
 
+/// Contesta la consulta con la que WebKitGTK resuelve `Notification.permission`.
+///
+/// Desde WebKitGTK 2.40 el estado de un permiso no sale solo de
+/// `initialize_notification_permissions`: el motor **pregunta** a la aplicación
+/// con la señal `query-permission-state`, y si nadie contesta, la página ve el
+/// permiso en «default». Medido en el banco de pruebas: la señal llega con
+/// `WebKitWebView` y `WebKitPermissionStateQuery`, y sin respuesta
+/// `Notification.permission` se queda en `default` —con lo que WhatsApp no
+/// emite un solo aviso— y `requestPermission()` devuelve `denied` porque
+/// llamarlo sin gesto del usuario no está permitido. No se rompió al
+/// actualizar Wrusp, sino el motor del sistema.
+///
+/// El binding de Rust marca esta señal como no soportada, así que se conecta
+/// por nombre y se responde con la API de C. Solo se concede
+/// `notifications`, y solo a los orígenes de `notification_origins`; el resto
+/// de permisos se dejan sin contestar para que sigan su camino de siempre
+/// (`permission-request`, más abajo).
+#[cfg(target_os = "linux")]
+fn contestar_consultas_de_permiso(native: &webkit2gtk::WebView) {
+    use webkit2gtk::glib::prelude::*;
+    use webkit2gtk::glib::translate::{from_glib_none, ToGlibPtr};
+    use webkit2gtk::glib::{gobject_ffi, Value};
+    use webkit2gtk::{ffi, SecurityOrigin};
+
+    let _ = native.connect_local("query-permission-state", false, move |valores| {
+        // Devolver `true` significa «contestada»; `false`, que WebKit siga su
+        // política por defecto.
+        let concedida = unsafe {
+            let Some(valor) = valores.get(1) else {
+                return Some(false.to_value());
+            };
+            let consulta = gobject_ffi::g_value_get_boxed(valor.to_glib_none().0)
+                as *mut ffi::WebKitPermissionStateQuery;
+            if consulta.is_null() {
+                return Some(false.to_value());
+            }
+            let nombre: String =
+                from_glib_none(ffi::webkit_permission_state_query_get_name(consulta));
+            let origen: SecurityOrigin = from_glib_none(
+                ffi::webkit_permission_state_query_get_security_origin(consulta),
+            );
+            let permitido = nombre == "notifications"
+                && notification_origins().iter().any(|esperado| {
+                    esperado.protocol() == origen.protocol() && esperado.host() == origen.host()
+                });
+            #[cfg(debug_assertions)]
+            println!(
+                "wrusp: consulta de permiso «{nombre}» de {}://{} → {}",
+                origen.protocol().unwrap_or_default(),
+                origen.host().unwrap_or_default(),
+                if permitido { "concedido" } else { "sin tocar" }
+            );
+            if permitido {
+                ffi::webkit_permission_state_query_finish(
+                    consulta,
+                    ffi::WEBKIT_PERMISSION_STATE_GRANTED,
+                );
+            }
+            permitido
+        };
+        Some(Value::from(concedida))
+    });
+}
+
+/// Pide un proceso web nuevo, una sola vez, nada más montar la vista.
+///
+/// `Notification.permission` no lo resuelve la consulta de arriba: sale de la
+/// lista que WebKit pide **al lanzar el proceso web**, con la señal
+/// `initialize-notification-permissions`. Esa señal se emite antes de que
+/// Tauri nos deje tocar el webview, así que la primera carga siempre se
+/// quedaba sin permiso —la página veía «default» y WhatsApp no emitía un solo
+/// aviso— y no había forma de concedérselo después:
+/// `requestPermission()` sin gesto del usuario devuelve «denied».
+///
+/// Medido en el banco de pruebas: con el proceso web recién arrancado el
+/// permiso es «default»; tras reiniciarlo con la señal ya conectada, WebKit
+/// pide la lista, la sembramos y la página pasa a «granted». Se hace al
+/// arrancar la vista, cuando la carga acaba de empezar y reiniciarla no cuesta
+/// nada.
+#[cfg(target_os = "linux")]
+fn pedir_proceso_web_nuevo(native: &webkit2gtk::WebView) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use webkit2gtk::glib;
+    use webkit2gtk::WebViewExt;
+
+    // Dónde estaba yendo la vista cuando pedimos el reinicio. Se guarda porque
+    // en ese momento la carga aún no está confirmada y `reload()` dejaría la
+    // vista en blanco.
+    let destino: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    let pendiente = destino.clone();
+    native.connect_web_process_terminated(move |vista, _motivo| {
+        // Solo se recarga el reinicio que hemos pedido nosotros; si el proceso
+        // se cae de verdad, WebKit muestra su propia página de error.
+        if let Some(url) = pendiente.borrow_mut().take() {
+            vista.load_uri(&url);
+        }
+    });
+
+    // En cuanto el bucle respire: así el proceso ya existe y termina de verdad.
+    let vista = native.clone();
+    glib::idle_add_local_once(move || {
+        let url = vista.uri().map(|u| u.to_string()).unwrap_or_default();
+        if url.is_empty() {
+            return; // sin destino conocido no se toca nada
+        }
+        *destino.borrow_mut() = Some(url);
+        vista.terminate_web_process();
+    });
+}
+
 /// Activa las capacidades del webview y engancha permisos y notificaciones.
 #[cfg(target_os = "linux")]
 pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, account_id: &str) {
@@ -95,11 +207,19 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             ctx.initialize_notification_permissions(&refs, &[]);
             // WebKit vuelve a pedir la lista cuando le conviene.
             ctx.connect_initialize_notification_permissions(move |ctx| {
+                #[cfg(debug_assertions)]
+                println!("wrusp: WebKit pide la lista de permisos de notificación");
                 let permitidos = notification_origins();
                 let refs: Vec<&SecurityOrigin> = permitidos.iter().collect();
                 ctx.initialize_notification_permissions(&refs, &[]);
             });
         }
+
+        // La concesión de arriba ya no basta por sí sola (ver
+        // `contestar_consultas_de_permiso`), pero se deja: es la vía por la que
+        // WebKit siembra el proveedor de notificaciones.
+        contestar_consultas_de_permiso(&native);
+        pedir_proceso_web_nuevo(&native);
 
         // ── Resto de permisos ───────────────────────────────────
         native.connect_permission_request(|_, request| {

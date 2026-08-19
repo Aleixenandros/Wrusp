@@ -137,8 +137,10 @@ fn entregar(app: &AppHandle, etiqueta: &str, entradas: Vec<Entrada>, x: i64, y: 
         }
     }
     if entregados == 0 {
+        eprintln!("wrusp: no se pudo preparar ningún fichero para la vista");
         return;
     }
+    eprintln!("wrusp: {entregados} fichero(s) empujados a la vista ({x}, {y})");
     let _ = vista.eval(format!(
         "window.__wruspEntregar && window.__wruspEntregar({x}, {y})"
     ));
@@ -308,22 +310,76 @@ pub const SCRIPT: &str = r#"(function () {
     partes.delete(i);
   };
 
-  // Se entrega como un soltado: es la vía que WhatsApp escucha, tanto para lo
-  // que se suelta como para lo que se pega.
-  window.__wruspEntregar = function (x, y) {
-    if (!listos.length) return;
+  // Sin esto no hay forma de saber por qué falla una entrega: la página es la
+  // única que ve si WhatsApp la acepta.
+  const anotar = (texto) => {
+    if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
+  };
+  const esperar = (ms) => new Promise((listo) => setTimeout(listo, ms));
+
+  const transporte = (ficheros) => {
     const datos = new DataTransfer();
-    for (const f of listos) datos.items.add(f);
-    listos.length = 0;
-    // Sin coordenadas (lo pegado), va donde esté el foco: la caja del chat.
-    const destino = x < 0
-      ? (document.activeElement || document.body)
-      : (document.elementFromPoint(x, y) || document.body);
-    for (const tipo of ['dragenter', 'dragover', 'drop']) {
-      destino.dispatchEvent(new DragEvent(tipo, {
-        bubbles: true, cancelable: true, composed: true, dataTransfer: datos
-      }));
+    for (const f of ficheros) datos.items.add(f);
+    return datos;
+  };
+
+  // Aceptar un soltado exige llamar a preventDefault, así que eso mismo dice
+  // si al otro lado había alguien escuchando.
+  const soltarEn = async (destino, ficheros) => {
+    let aceptado = false;
+    for (const tipo of ['dragenter', 'dragover', 'dragover', 'drop']) {
+      const evento = new DragEvent(tipo, {
+        bubbles: true, cancelable: true, composed: true, dataTransfer: transporte(ficheros)
+      });
+      destino.dispatchEvent(evento);
+      if (evento.defaultPrevented) aceptado = true;
+      // WhatsApp decide con estado de React entre un evento y el siguiente.
+      await esperar(40);
     }
+    return aceptado;
+  };
+
+  const pegarEn = (destino, ficheros) => {
+    const evento = new ClipboardEvent('paste', {
+      clipboardData: transporte(ficheros), bubbles: true, cancelable: true, composed: true
+    });
+    destino.dispatchEvent(evento);
+    return evento.defaultPrevented;
+  };
+
+  // `x` negativa = viene del portapapeles y no hay punto donde soltarlo.
+  window.__wruspEntregar = async function (x, y) {
+    const ficheros = listos.splice(0, listos.length);
+    if (!ficheros.length) return;
+    const nombres = ficheros.map((f) => f.name).join(', ');
+    // Un evento solo lo ven el destino y sus padres, así que se prueba donde
+    // más sentido tiene: el punto del soltado o el foco (la caja del chat), y
+    // si no, el centro de la vista, que cae dentro del panel de conversación.
+    const punto = x < 0 ? null : document.elementFromPoint(x, y);
+    const foco = document.activeElement;
+    const centro = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+    const destinos = [punto, foco, centro, document.body]
+      .filter((d, i, todos) => d && todos.indexOf(d) === i);
+
+    // Lo pegado se entrega primero como pegado, que es lo que WhatsApp espera
+    // de una captura; si nadie lo recoge, se intenta como soltado.
+    if (x < 0) {
+      for (const destino of destinos) {
+        if (pegarEn(destino, ficheros)) {
+          anotar('pegado aceptado (' + nombres + ')');
+          return;
+        }
+      }
+    }
+    for (const destino of destinos) {
+      if (await soltarEn(destino, ficheros)) {
+        anotar('soltado aceptado en ' + (destino.tagName || '?') + ' (' + nombres + ')');
+        return;
+      }
+    }
+    anotar('nadie aceptó ' + ficheros.length + ' fichero(s): ' + nombres +
+           ' · destinos=' + destinos.map((d) => d.tagName || '?').join('/') +
+           ' · entradas=' + document.querySelectorAll('input[type=file]').length);
   };
 
   // Pegar: si el motor no le pasa nada a la página —ni tipos ni ficheros—, es
@@ -335,6 +391,7 @@ pub const SCRIPT: &str = r#"(function () {
     if (tipos.length || (datos.files && datos.files.length)) return;
     // Sin esto, WebKit incrusta la imagen en la caja de texto como <img blob:>.
     evento.preventDefault();
+    anotar('pegado vacío: se lo pedimos a Rust');
     if (window.__wruspOrden) window.__wruspOrden('pegar');
   }, true);
 })();"#;

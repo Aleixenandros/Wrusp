@@ -4,6 +4,18 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.4] — 2026-08-19
+
+### Corregido
+
+- **Vuelven las notificaciones de escritorio.** Desde WebKitGTK 2.40 el motor decide el permiso preguntándoselo a la aplicación por una vía nueva, y además siembra el valor de `Notification.permission` **solo al lanzar el proceso web**, antes de que Tauri deje configurar la vista. El resultado, medido: la página veía el permiso en «default» pese a que Wrusp lo concedía, WhatsApp no emitía un solo aviso, y no había forma de arreglarlo desde la página porque pedir el permiso sin un clic del usuario devuelve «denegado». Ahora Wrusp contesta esa consulta y se asegura de que el proceso web arranque con el permiso ya concedido; comprobado de extremo a extremo, con la notificación llegando al escritorio. No lo rompió una versión de Wrusp, sino la actualización del motor del sistema.
+- **Pegar una captura se entrega ahora como un pegado de verdad.** La 0.3.3 recuperaba la imagen del portapapeles pero se la ofrecía a WhatsApp como si la hubieras soltado, y WhatsApp no la recogía. Ahora se le entrega como el evento de pegado que espera, con el fichero dentro, apuntando a la caja de escritura donde estabas.
+- **Arrastrar y soltar: la entrega llega donde tiene que llegar.** Los eventos se dirigían a un punto que podía quedar fuera del panel de conversación —y un evento solo lo ven su destino y sus padres—, y se lanzaban los tres seguidos sin dar tiempo a que WhatsApp actualizara su estado. Ahora se prueban el punto del soltado, la caja con el foco y el centro de la conversación, con un respiro entre eventos, y se comprueba si el otro lado lo acepta.
+
+### Añadido
+
+- **El puente de ficheros deja rastro en el registro.** Cada entrega anota cuántos ficheros se empujaron y si WhatsApp los aceptó, con nombres y destino. Las dos averías anteriores no dejaban ni una línea: se diagnosticaban a ciegas.
+
 ## [0.3.3] — 2026-08-19
 
 ### Corregido

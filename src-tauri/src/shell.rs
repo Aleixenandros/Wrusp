@@ -165,6 +165,25 @@ fn handle_command(app: &AppHandle, url: &tauri::Url) {
             }
             "quit" => app.exit(0),
             "zoom" => apply_zoom_step(&app, arg),
+            // La página cuenta cómo le ha ido una entrega de ficheros: es la
+            // única que ve si WhatsApp la acepta, y sin esto el fallo no dejaba
+            // rastro ninguno (ver `filedrop`).
+            "log" => {
+                let mensaje: String = url
+                    .query_pairs()
+                    .find(|(clave, _)| clave == "m")
+                    .map(|(_, valor)| {
+                        valor
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(300)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !mensaje.is_empty() {
+                    eprintln!("wrusp: página: {mensaje}");
+                }
+            }
             // Lo pegado, cuando el motor no se lo entrega a la página (ver
             // `filedrop`). Va a la vista visible, no a la que diga la página.
             "pegar" => {
