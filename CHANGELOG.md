@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.5] — 2026-08-19
+
+### Corregido
+
+- **El escritorio deja de llenarse de controles de reproducción muertos.** WebKitGTK publica una sesión de medios en el escritorio por cada audio o vídeo que suena —de ahí los «wrusp» del panel de GNOME— pero no la retira al terminar: veinte vídeos dejaban veinte entradas, y ahí se quedaban hasta cerrar la aplicación. Comprobado en el bus de la sesión, con reproductores acumulados del proceso web de Wrusp. Se desactiva esa integración del motor, verificado con la misma prueba antes y después: sin el cambio aparece una entrada nueva por reproducción, con él ninguna, y el vídeo y el audio se siguen reproduciendo igual. A cambio, las teclas de medios del teclado ya no controlan lo que suena en WhatsApp.
+
 ## [0.3.4] — 2026-08-19
 
 ### Corregido

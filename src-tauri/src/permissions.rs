@@ -150,6 +150,75 @@ fn pedir_proceso_web_nuevo(native: &webkit2gtk::WebView) {
     });
 }
 
+/// Apaga la característica del motor que registra un reproductor en el
+/// escritorio por cada audio o vídeo.
+///
+/// WebKitGTK publica una sesión MPRIS por cada elemento multimedia que suena
+/// —así aparecen los controles de reproducción de GNOME—, pero **no la retira
+/// al terminar**: cada nota de voz, cada vídeo y cada sonido de notificación
+/// deja un «wrusp» más en el panel de medios, y se acumulan hasta cerrar la
+/// aplicación. Comprobado en el bus de la sesión: varios
+/// `org.mpris.MediaPlayer2.org.webkit.app-….instance-N` vivos a la vez, todos
+/// del proceso web de Wrusp.
+///
+/// Se desactiva la característica `MediaSession` del motor, que es de donde
+/// cuelga ese registro. El precio es no controlar la reproducción de WhatsApp
+/// con las teclas de medios del teclado; a cambio, el panel de medios del
+/// escritorio deja de llenarse de entradas muertas. La API de características
+/// no está en el binding de Rust, así que se declara a mano.
+#[cfg(target_os = "linux")]
+fn apagar_sesion_multimedia(settings: &webkit2gtk::Settings) {
+    use std::ffi::CStr;
+    use webkit2gtk::glib::translate::ToGlibPtr;
+
+    #[repr(C)]
+    struct WebKitFeature {
+        _opaco: [u8; 0],
+    }
+    #[repr(C)]
+    struct WebKitFeatureList {
+        _opaco: [u8; 0],
+    }
+    extern "C" {
+        fn webkit_settings_get_all_features() -> *mut WebKitFeatureList;
+        fn webkit_feature_list_get_length(lista: *mut WebKitFeatureList) -> usize;
+        fn webkit_feature_list_get(lista: *mut WebKitFeatureList, i: usize) -> *mut WebKitFeature;
+        fn webkit_feature_list_unref(lista: *mut WebKitFeatureList);
+        fn webkit_feature_get_identifier(f: *mut WebKitFeature) -> *const std::os::raw::c_char;
+        fn webkit_settings_set_feature_enabled(
+            settings: *mut webkit2gtk::ffi::WebKitSettings,
+            f: *mut WebKitFeature,
+            activada: webkit2gtk::glib::ffi::gboolean,
+        );
+    }
+
+    unsafe {
+        let lista = webkit_settings_get_all_features();
+        if lista.is_null() {
+            return;
+        }
+        for i in 0..webkit_feature_list_get_length(lista) {
+            let caracteristica = webkit_feature_list_get(lista, i);
+            if caracteristica.is_null() {
+                continue;
+            }
+            let identificador = webkit_feature_get_identifier(caracteristica);
+            if identificador.is_null()
+                || CStr::from_ptr(identificador).to_bytes() != b"MediaSession"
+            {
+                continue;
+            }
+            webkit_settings_set_feature_enabled(
+                settings.to_glib_none().0,
+                caracteristica,
+                webkit2gtk::glib::ffi::GFALSE,
+            );
+            break;
+        }
+        webkit_feature_list_unref(lista);
+    }
+}
+
 /// Activa las capacidades del webview y engancha permisos y notificaciones.
 #[cfg(target_os = "linux")]
 pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, account_id: &str) {
@@ -193,6 +262,9 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             // apuntando al fichero de registro: los errores del reproductor
             // de WhatsApp quedan consultables desde ajustes.
             settings.set_enable_write_console_messages_to_stdout(true);
+            // Sin esto, cada audio y cada vídeo deja un control de medios
+            // muerto en el escritorio (ver la función).
+            apagar_sesion_multimedia(&settings);
         }
 
         // ── Permiso de notificaciones, concedido de antemano ────
