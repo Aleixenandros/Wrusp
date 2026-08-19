@@ -1,116 +1,236 @@
-//! Ficheros soltados sobre una vista de cuenta.
+//! Ficheros que entran en un chat: soltados sobre la vista o pegados.
 //!
-//! WebKitGTK entrega el soltado con la ruta del fichero (`text/uri-list`) pero
-//! **no** construye el `File` que espera la página: `dataTransfer.files` llega
-//! vacío y WhatsApp no adjunta nada. Medido en el banco de pruebas:
-//! `DROP ficheros=0 tipos=[text/uri-list|text/html]`.
+//! Son dos agujeros del motor con el mismo remedio. Medidos con banco de
+//! pruebas propio (`WRUSP_TEST_URL`), no supuestos:
 //!
-//! Aquí se hace ese puente. Tauri sí recibe el soltado con las rutas reales;
-//! se guardan un momento y la vista las pide por `wrusp://drop/…` para armar
-//! los ficheros y entregárselos a WhatsApp como si los hubiera soltado el
-//! usuario encima.
+//! - **Soltar**: WebKitGTK entrega el soltado con la ruta del fichero
+//!   (`text/uri-list`) pero **no** construye el `File` que espera la página:
+//!   `DROP ficheros=0 tipos=[text/uri-list|text/html]`.
+//! - **Pegar**: con un PNG en el portapapeles, el evento `paste` le llega a la
+//!   página vacío del todo —`tipos=[] ficheros=0 items=[]`— mientras el motor
+//!   sí incrusta la imagen en el DOM como `<img src="blob:…">`. Con texto, en
+//!   cambio, llega `tipos=[text/plain]`. WhatsApp escucha ese evento buscando
+//!   un fichero y no encuentra nada que adjuntar.
 //!
-//! **La página nunca elige la ruta**: solo puede pedir lo que se acaba de
-//! soltar de verdad, y durante unos segundos. Sin eso, un script de una página
-//! remota tendría por dónde leer cualquier fichero del disco.
+//! El puente lo pone Wrusp: Rust lee los bytes y **los empuja** a la vista con
+//! `eval`, en trozos de base64, y la página arma los `File` y se los entrega a
+//! WhatsApp como un soltado normal.
+//!
+//! Antes los bytes se servían por `wrusp://drop/…` y la página los pedía con
+//! `fetch`; la CSP de WhatsApp lo bloquea (`connect-src` no admite esquemas
+//! propios) y arrastrar dejó de funcionar sin decir nada. Empujar por `eval`
+//! no depende de la CSP —comprobado reproduciendo la política en el banco de
+//! pruebas— y de paso la página ya no puede *pedir* nada: solo recibe lo que
+//! el usuario acaba de soltar o pegar.
 
-use crate::runtime::AppHandle;
+use crate::runtime::{AppHandle, Runtime};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{webview::Webview, Manager};
 
-/// Cuánto siguen disponibles los ficheros tras soltarlos. Lo justo para que la
-/// vista los recoja; pasado eso, se olvidan.
-const VALIDEZ: Duration = Duration::from_secs(30);
+/// Bytes por `eval`; en base64 son algo más de 1 MB de script por viaje.
+const TROZO: usize = 768 * 1024;
 
-/// Lo último que se soltó sobre una vista.
-#[derive(Default)]
-pub struct PendingDrop(pub Mutex<Option<Soltado>>);
+/// Tope por fichero: pasarlo por la vista cuesta memoria en el proceso web, y
+/// más allá de esto no compensa. Lo que se descarte se dice en el registro.
+const MAX_FICHERO: u64 = 256 * 1024 * 1024;
+const MB: u64 = 1024 * 1024;
 
-pub struct Soltado {
-    momento: Instant,
-    rutas: Vec<PathBuf>,
+/// Punto de entrega «donde toque»: lo pegado no tiene coordenadas, así que va
+/// al elemento con el foco (la caja del chat abierto).
+const DONDE_TOCA: i64 = -1;
+
+/// Lo que se entrega a la vista: un fichero del disco o unos bytes en memoria.
+enum Entrada {
+    Ruta(PathBuf),
+    Bytes {
+        nombre: String,
+        tipo: String,
+        datos: Vec<u8>,
+    },
 }
 
-/// Guarda las rutas recién soltadas y devuelve cuántas se aceptaron.
-pub fn registrar(app: &AppHandle, rutas: Vec<PathBuf>) -> usize {
-    // Solo ficheros normales: un directorio soltado no se puede adjuntar.
-    let rutas: Vec<PathBuf> = rutas.into_iter().filter(|r| r.is_file()).collect();
-    let total = rutas.len();
-    let pendiente = app.state::<PendingDrop>();
-    let mut estado = pendiente.0.lock().unwrap();
-    *estado = if total == 0 {
-        None
-    } else {
-        Some(Soltado {
-            momento: Instant::now(),
-            rutas,
-        })
+/// Entrega a la vista los ficheros soltados sobre ella, en el punto exacto
+/// donde se soltaron (en píxeles CSS).
+pub fn soltar(app: &AppHandle, etiqueta: &str, rutas: Vec<PathBuf>, x: i64, y: i64) {
+    // Un directorio soltado no se puede adjuntar.
+    let entradas: Vec<Entrada> = rutas
+        .into_iter()
+        .filter(|ruta| ruta.is_file())
+        .map(Entrada::Ruta)
+        .collect();
+    entregar(app, etiqueta, entradas, x, y);
+}
+
+/// Entrega al chat lo que haya en el portapapeles: los ficheros copiados en el
+/// gestor de ficheros o, si no los hay, la imagen.
+#[cfg(target_os = "linux")]
+pub fn pegar(app: &AppHandle, etiqueta: &str) {
+    use gtk::gdk;
+
+    let Some(pantalla) = gdk::Display::default() else {
+        return;
     };
-    total
+    let Some(portapapeles) = gtk::Clipboard::default(&pantalla) else {
+        return;
+    };
+
+    // Un fichero copiado conserva nombre y tipo, así que tiene preferencia
+    // sobre la imagen que el escritorio ofrezca del mismo contenido.
+    let rutas: Vec<Entrada> = portapapeles
+        .wait_for_uris()
+        .iter()
+        .filter_map(|uri| uri.parse::<tauri::Url>().ok())
+        .filter_map(|url| url.to_file_path().ok())
+        .filter(|ruta| ruta.is_file())
+        .map(Entrada::Ruta)
+        .collect();
+    if !rutas.is_empty() {
+        entregar(app, etiqueta, rutas, DONDE_TOCA, DONDE_TOCA);
+        return;
+    }
+
+    let Some(imagen) = portapapeles.wait_for_image() else {
+        return; // no había nada que Wrusp pueda adjuntar
+    };
+    match imagen.save_to_bufferv("png", &[]) {
+        Ok(datos) => entregar(
+            app,
+            etiqueta,
+            vec![Entrada::Bytes {
+                nombre: "imagen-pegada.png".to_string(),
+                tipo: "image/png".to_string(),
+                datos,
+            }],
+            DONDE_TOCA,
+            DONDE_TOCA,
+        ),
+        Err(err) => eprintln!("wrusp: no se pudo convertir la imagen pegada ({err})"),
+    }
 }
 
-/// Rutas todavía válidas. Devuelve vacío si caducaron o no hay nada.
-fn vigentes(app: &AppHandle) -> Vec<PathBuf> {
-    let pendiente = app.state::<PendingDrop>();
-    let mut estado = pendiente.0.lock().unwrap();
-    match estado.as_ref() {
-        Some(s) if s.momento.elapsed() <= VALIDEZ => s.rutas.clone(),
-        Some(_) => {
-            *estado = None;
-            Vec::new()
+/// En Windows y macOS el motor sí le entrega a la página lo que se pega.
+#[cfg(not(target_os = "linux"))]
+pub fn pegar(_app: &AppHandle, _etiqueta: &str) {}
+
+/// Empuja las entradas a la vista y le pide que las suelte sobre la página.
+fn entregar(app: &AppHandle, etiqueta: &str, entradas: Vec<Entrada>, x: i64, y: i64) {
+    if entradas.is_empty() {
+        return;
+    }
+    let Some(vista) = app.get_webview(etiqueta) else {
+        return;
+    };
+
+    let mut entregados = 0;
+    for entrada in entradas {
+        let listo = match entrada {
+            Entrada::Ruta(ruta) => empujar_fichero(&vista, entregados, &ruta),
+            Entrada::Bytes {
+                nombre,
+                tipo,
+                datos,
+            } => empujar(&vista, entregados, &nombre, &tipo, &mut datos.as_slice()),
+        };
+        if listo {
+            entregados += 1;
         }
-        None => Vec::new(),
     }
+    if entregados == 0 {
+        return;
+    }
+    let _ = vista.eval(format!(
+        "window.__wruspEntregar && window.__wruspEntregar({x}, {y})"
+    ));
 }
 
-/// Atiende `wrusp://drop/…`. Devuelve `None` si la URL no es de este módulo,
-/// para que la siga tratando `shell` como una orden más.
-pub fn responder(
-    app: &AppHandle,
-    uri: &tauri::http::Uri,
-) -> Option<tauri::http::Response<Vec<u8>>> {
-    let url: tauri::Url = uri.to_string().parse().ok()?;
-    if url.host_str() != Some("drop") {
-        return None;
+/// Lee un fichero del disco y lo empuja a la vista.
+fn empujar_fichero(vista: &Webview<Runtime>, indice: usize, ruta: &Path) -> bool {
+    let tamano = std::fs::metadata(ruta).map(|m| m.len()).unwrap_or_default();
+    if tamano > MAX_FICHERO {
+        eprintln!(
+            "wrusp: {} ocupa {} MB y no se adjunta (tope {} MB)",
+            ruta.display(),
+            tamano / MB,
+            MAX_FICHERO / MB
+        );
+        return false;
     }
-
-    let ruta = url.path().trim_start_matches('/').to_string();
-    let rutas = vigentes(app);
-
-    let (tipo, cuerpo) = if ruta == "lista" {
-        let items: Vec<serde_json::Value> = rutas
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                serde_json::json!({
-                    "i": i,
-                    "n": r.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                    "t": mime_por_extension(r),
-                })
-            })
-            .collect();
-        (
-            "application/json".to_string(),
-            serde_json::to_vec(&items).unwrap_or_default(),
-        )
-    } else {
-        let indice = ruta.strip_prefix("fichero/")?;
-        let indice: usize = indice.parse().ok()?;
-        // El índice solo puede apuntar dentro de lo que se acaba de soltar.
-        let ruta = rutas.get(indice)?;
-        let datos = std::fs::read(ruta).ok()?;
-        (mime_por_extension(ruta), datos)
+    let mut fichero = match std::fs::File::open(ruta) {
+        Ok(fichero) => fichero,
+        Err(err) => {
+            eprintln!("wrusp: no se pudo abrir {} ({err})", ruta.display());
+            return false;
+        }
     };
+    let nombre = ruta
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "fichero".to_string());
+    empujar(
+        vista,
+        indice,
+        &nombre,
+        &mime_por_extension(ruta),
+        &mut fichero,
+    )
+}
 
-    tauri::http::Response::builder()
-        .status(200)
-        .header("Content-Type", tipo)
-        // La página se sirve desde https://web.whatsapp.com.
-        .header("Access-Control-Allow-Origin", "*")
-        .body(cuerpo)
-        .ok()
+/// Manda el contenido en trozos de base64 y cierra el fichero en la página.
+fn empujar(
+    vista: &Webview<Runtime>,
+    indice: usize,
+    nombre: &str,
+    tipo: &str,
+    origen: &mut dyn Read,
+) -> bool {
+    let mut buffer = vec![0u8; TROZO];
+    loop {
+        let leidos = match origen.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(leidos) => leidos,
+            Err(err) => {
+                eprintln!("wrusp: no se pudo leer «{nombre}» ({err})");
+                return false;
+            }
+        };
+        // El base64 solo tiene caracteres seguros dentro de una cadena de JS.
+        let trozo = base64(&buffer[..leidos]);
+        if vista
+            .eval(format!(
+                "window.__wruspTrozo && window.__wruspTrozo({indice}, \"{trozo}\")"
+            ))
+            .is_err()
+        {
+            return false;
+        }
+    }
+    let nombre = serde_json::to_string(nombre).unwrap_or_else(|_| "\"fichero\"".to_string());
+    let tipo =
+        serde_json::to_string(tipo).unwrap_or_else(|_| "\"application/octet-stream\"".into());
+    vista
+        .eval(format!(
+            "window.__wruspFichero && window.__wruspFichero({indice}, {nombre}, {tipo})"
+        ))
+        .is_ok()
+}
+
+/// Base64 estándar (RFC 4648). A mano: son seis líneas y ahorra una
+/// dependencia para lo único que hace falta, escribirlo.
+fn base64(datos: &[u8]) -> String {
+    const ALFABETO: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut salida = String::with_capacity(datos.len().div_ceil(3) * 4);
+    for grupo in datos.chunks(3) {
+        let n = (u32::from(grupo[0]) << 16)
+            | (u32::from(grupo.get(1).copied().unwrap_or(0)) << 8)
+            | u32::from(grupo.get(2).copied().unwrap_or(0));
+        let letra = |desplazamiento: u32| ALFABETO[((n >> desplazamiento) & 0x3F) as usize] as char;
+        salida.push(letra(18));
+        salida.push(letra(12));
+        salida.push(if grupo.len() > 1 { letra(6) } else { '=' });
+        salida.push(if grupo.len() > 2 { letra(0) } else { '=' });
+    }
+    salida
 }
 
 /// Tipo de contenido a ojo de la extensión. Solo para que la página vea algo
@@ -164,36 +284,76 @@ fn mime_por_extension(ruta: &Path) -> String {
     tipo.to_string()
 }
 
-/// Script inyectado en las vistas de cuenta: recoge los ficheros soltados y se
-/// los entrega a la página como un soltado normal.
+/// Script inyectado en las vistas de cuenta: recibe los ficheros que empuja
+/// Rust, se los entrega a WhatsApp como un soltado, y avisa cuando lo pegado
+/// no le ha llegado a la página.
 pub const SCRIPT: &str = r#"(function () {
-  // Rust llama aquí tras un soltado real, con la posición en píxeles CSS.
-  window.__wruspSoltar = async function (x, y) {
-    let lista;
-    try {
-      lista = await (await fetch('wrusp://drop/lista')).json();
-    } catch (e) {
-      return;
-    }
-    if (!lista || !lista.length) return;
+  const partes = new Map();   // índice de fichero → trozos recibidos
+  const listos = [];
 
+  // Rust empuja los bytes en base64. La página no puede pedirlos (la CSP de
+  // WhatsApp no admite `wrusp://` en connect-src), pero sí recibirlos: lo que
+  // llega por `eval` no lo gobierna la CSP.
+  window.__wruspTrozo = function (i, b64) {
+    const bruto = atob(b64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let k = 0; k < bruto.length; k++) bytes[k] = bruto.charCodeAt(k);
+    const trozos = partes.get(i) || [];
+    trozos.push(bytes);
+    partes.set(i, trozos);
+  };
+
+  window.__wruspFichero = function (i, nombre, tipo) {
+    listos.push(new File(partes.get(i) || [], nombre, { type: tipo }));
+    partes.delete(i);
+  };
+
+  // Se entrega como un soltado: es la vía que WhatsApp escucha, tanto para lo
+  // que se suelta como para lo que se pega.
+  window.__wruspEntregar = function (x, y) {
+    if (!listos.length) return;
     const datos = new DataTransfer();
-    for (const f of lista) {
-      try {
-        const respuesta = await fetch('wrusp://drop/fichero/' + f.i);
-        const blob = await respuesta.blob();
-        datos.items.add(new File([blob], f.n, { type: f.t }));
-      } catch (e) { /* si uno falla, se entregan los demás */ }
-    }
-    if (!datos.files.length) return;
-
-    // Se entrega donde se soltó: WhatsApp escucha el soltado en el panel del
-    // chat, no en el documento.
-    const destino = document.elementFromPoint(x, y) || document.body;
+    for (const f of listos) datos.items.add(f);
+    listos.length = 0;
+    // Sin coordenadas (lo pegado), va donde esté el foco: la caja del chat.
+    const destino = x < 0
+      ? (document.activeElement || document.body)
+      : (document.elementFromPoint(x, y) || document.body);
     for (const tipo of ['dragenter', 'dragover', 'drop']) {
       destino.dispatchEvent(new DragEvent(tipo, {
         bubbles: true, cancelable: true, composed: true, dataTransfer: datos
       }));
     }
   };
+
+  // Pegar: si el motor no le pasa nada a la página —ni tipos ni ficheros—, es
+  // que lo del portapapeles no es texto y se lo ha guardado. Lo lee Rust.
+  window.addEventListener('paste', function (evento) {
+    const datos = evento.clipboardData;
+    if (!datos) return;
+    const tipos = datos.types || [];
+    if (tipos.length || (datos.files && datos.files.length)) return;
+    // Sin esto, WebKit incrusta la imagen en la caja de texto como <img blob:>.
+    evento.preventDefault();
+    if (window.__wruspOrden) window.__wruspOrden('pegar');
+  }, true);
 })();"#;
+
+#[cfg(test)]
+mod tests {
+    use super::base64;
+
+    #[test]
+    fn base64_con_los_vectores_del_rfc() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        // Bytes altos: los que delatarían un desplazamiento con signo.
+        assert_eq!(base64(&[0xff, 0xfe, 0xfd]), "//79");
+        assert_eq!(base64(&[0x00, 0x00, 0x00]), "AAAA");
+    }
+}

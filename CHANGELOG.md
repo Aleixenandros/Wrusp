@@ -4,6 +4,13 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.3] — 2026-08-19
+
+### Corregido
+
+- **Pegar una imagen en un chat vuelve a adjuntarla.** WebKitGTK no le entrega a la página lo que se pega si no es texto: medido con banco de pruebas propio, teniendo un PNG en el portapapeles el evento `paste` llega con `tipos=[] ficheros=0 items=[]`, mientras que con texto llega `tipos=[text/plain]`. El motor sí tiene la imagen —la incrusta en la caja de escritura como `<img src="blob:…">`—, pero WhatsApp busca un fichero en ese evento y no encontraba nada. Ahora, cuando el motor no le pasa nada a la página, Wrusp lee el portapapeles desde Rust y le entrega la imagen a WhatsApp como si la hubieras soltado en el chat; la imagen deja además de colarse dentro de la caja de texto. También funciona con un fichero copiado en el gestor de ficheros.
+- **Arrastrar y soltar vuelve a funcionar: WhatsApp cerró la puerta que usaba el puente.** Los ficheros soltados se le servían a la página en `wrusp://drop/…` y esta los pedía con `fetch`; la política de seguridad de contenido de WhatsApp Web no admite esquemas propios en `connect-src`, así que la petición se rechazaba y el puente se rendía sin decir nada (en el registro: «Refused to connect to wrusp://drop/lista»). El mismo bloqueo afecta desde hace tiempo a la barra lateral, que sobrevive porque tiene un camino alternativo. Ahora es Rust quien **empuja** los bytes a la vista en trozos, una vía que la política de la página no gobierna, verificado reproduciendo esa misma política en el banco de pruebas: dos ficheros soltados a la vez llegan con su tamaño y su suma de control exactos. De paso la página ya no puede pedirle nada a Wrusp: solo recibe lo que acabas de soltar o pegar.
+
 ## [0.3.2] — 2026-08-18
 
 ### Corregido

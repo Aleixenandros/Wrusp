@@ -72,9 +72,10 @@ pub fn runtime_script(own: &str) -> String {
 
   // Las órdenes viajan como petición de red al esquema propio `wrusp://`, no
   // como navegación: dos navegaciones en el mismo instante se pisan y se
-  // perdían avisos (notificación y contador llegan juntos). Si el esquema no
-  // estuviera disponible, se recurre a la navegación, que Rust también
-  // intercepta.
+  // perdían avisos (notificación y contador llegan juntos). Sobre WhatsApp esa
+  // petición no sale —su CSP no admite esquemas propios en `connect-src`— y
+  // entra la navegación, que Rust también intercepta. En la página de ajustes,
+  // que es nuestra y no trae CSP, va por la vía rápida.
   const go = (path) => {{
     const url = 'wrusp://' + path;
     try {{
@@ -85,6 +86,8 @@ pub fn runtime_script(own: &str) -> String {
       window.location.href = url;
     }}
   }};
+  // El puente de ficheros lo usa para avisar de un pegado (ver `filedrop`).
+  window.__wruspOrden = go;
   const st = () => window.__wruspState || {{ accounts: [], active: '', dark: false, width: 60 }};
 
   // ── Barra lateral ───────────────────────────────────────────

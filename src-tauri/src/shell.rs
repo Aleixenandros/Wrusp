@@ -165,6 +165,14 @@ fn handle_command(app: &AppHandle, url: &tauri::Url) {
             }
             "quit" => app.exit(0),
             "zoom" => apply_zoom_step(&app, arg),
+            // Lo pegado, cuando el motor no se lo entrega a la página (ver
+            // `filedrop`). Va a la vista visible, no a la que diga la página.
+            "pegar" => {
+                let etiqueta = active_label(&app);
+                if etiqueta != SETTINGS_VIEW {
+                    crate::filedrop::pegar(&app, &etiqueta);
+                }
+            }
             // `unread/<id>/<n>`: lo emite el observador del título.
             "unread" => {
                 if let Some((id, count)) = arg.split_once('/') {
@@ -609,21 +617,34 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         else {
             return;
         };
-        if crate::filedrop::registrar(&handle, paths.clone()) == 0 {
-            return;
-        }
         // La posición viene en píxeles físicos y la página razona en CSS.
         let escala = handle
             .get_window(MAIN_WINDOW)
             .and_then(|w| w.scale_factor().ok())
             .unwrap_or(1.0);
-        let (x, y) = (position.x / escala, position.y / escala);
-        if let Some(vista) = handle.get_webview(&etiqueta) {
-            let _ = vista.eval(format!(
-                "window.__wruspSoltar && window.__wruspSoltar({x}, {y})"
-            ));
-        }
+        let x = (position.x / escala).round() as i64;
+        let y = (position.y / escala).round() as i64;
+        crate::filedrop::soltar(&handle, &etiqueta, paths.clone(), x, y);
     });
+
+    // Arnés de pruebas: soltar de verdad exige una mano en el ratón, así que
+    // con `WRUSP_TEST_DROP=/ruta[:/otra]` se simula el soltado en cuanto la
+    // vista está en pie. Es justo lo que se rompió en silencio, y así se puede
+    // comprobar sin manos. Nunca se compila en release.
+    #[cfg(debug_assertions)]
+    if let Ok(rutas) = std::env::var("WRUSP_TEST_DROP") {
+        let rutas: Vec<std::path::PathBuf> =
+            rutas.split(':').map(std::path::PathBuf::from).collect();
+        let handle = app.clone();
+        let etiqueta = view_label(&account.id);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            let app = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                crate::filedrop::soltar(&app, &etiqueta, rutas, 100, 100);
+            });
+        });
+    }
 
     Ok(())
 }
