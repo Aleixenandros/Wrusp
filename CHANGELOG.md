@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.6] — 2026-08-19
+
+### Corregido
+
+- **Los vídeos vuelven a reproducirse: la culpa era de la decodificación por hardware.** Con `mesa-va-drivers-freeworld` instalado —que el propio README recomendaba— el decodificador VA-API pasa a tener más rango que el de software y se queda con todos los vídeos… y con los de WhatsApp falla. En el registro de un caso real, los tres reproductores de la sesión usaron `vah264dec` y los tres murieron en `vaEndPicture: operation failed` y «Failed to decode data», con avisos de flujo mal formado. Con un fichero suelto ese mismo decodificador va bien, así que lo que no digiere es la forma troceada en que WhatsApp entrega el vídeo. Wrusp baja ahora el rango de los decodificadores por hardware para que ganen los de software, y respeta tu elección si ya traes la variable puesta. El README recomendaba ese paquete sin avisar de esto: corregido.
+
+### Añadido
+
+- **Registro de la cadena completa de notificaciones.** Hasta ahora, cuando no llegaba una notificación no había forma de saber en qué eslabón se perdía. El registro anota el permiso que se concede al arrancar, cada notificación que entrega el motor (sin su contenido: el registro no es sitio para los mensajes de nadie), y qué se hace con ella — enviada al escritorio, descartada porque tienes esa cuenta a la vista, o descartada porque las desactivaste en ajustes.
+
 ## [0.3.5] — 2026-08-19
 
 ### Corregido

@@ -70,8 +70,13 @@ sudo dnf install gstreamer1-plugin-libav libavcodec-freeworld gstreamer1-plugins
 sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good
 ```
 
-En Fedora, `mesa-va-drivers-freeworld` (también de RPM Fusion) añade además
-decodificación por hardware en GPUs AMD.
+> **Decodificación por hardware**: Wrusp la desactiva a propósito. En un equipo
+> AMD con `mesa-va-drivers-freeworld` instalado, el decodificador VA-API se
+> quedaba con todos los vídeos de WhatsApp y fallaba (`vaEndPicture: operation
+> failed`): unos no arrancaban y otros se quedaban en el primer fotograma. Con
+> los decodificadores de software se reproducen bien. Si prefieres probar el
+> hardware, fija tú la variable y Wrusp respetará tu elección:
+> `GST_PLUGIN_FEATURE_RANK=vah264dec:257 wrusp`.
 
 Si instalas códecs con Wrusp abierto, sal del todo y vuelve a entrar — con
 «Salir» desde el icono de la bandeja: cerrar la ventana deja la aplicación

@@ -71,8 +71,12 @@ sudo dnf install gstreamer1-plugin-libav libavcodec-freeworld gstreamer1-plugins
 sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good
 ```
 
-On Fedora, `mesa-va-drivers-freeworld` (also from RPM Fusion) additionally
-enables hardware decoding on AMD GPUs.
+> **Hardware decoding**: Wrusp turns it off on purpose. On an AMD machine with
+> `mesa-va-drivers-freeworld` installed, the VA-API decoder took over every
+> WhatsApp video and then failed (`vaEndPicture: operation failed`): some videos
+> never started, others froze on the first frame. Software decoders play them
+> fine. To try hardware anyway, set the variable yourself and Wrusp will respect
+> it: `GST_PLUGIN_FEATURE_RANK=vah264dec:257 wrusp`.
 
 If you install codecs while Wrusp is open, quit it fully and start it again —
 "Quit" from the tray icon: closing the window keeps the app alive, relaunching

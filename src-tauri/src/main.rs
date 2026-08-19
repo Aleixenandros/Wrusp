@@ -24,6 +24,34 @@ use config::ConfigState;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent, WindowEvent};
 
+/// Baja el rango de los decodificadores de vídeo por hardware para que
+/// GStreamer elija los de software.
+///
+/// La decodificación por VA-API revienta con los vídeos de WhatsApp. Medido en
+/// el registro de un caso real: los tres reproductores de la sesión usaron
+/// `vah264dec` y los tres acabaron en `vaEndPicture: operation failed` y
+/// «Failed to decode data», con avisos de flujo mal formado. Con un fichero
+/// suelto el mismo decodificador va bien, así que lo que no digiere es la forma
+/// en que WhatsApp entrega el vídeo (troceado, por MSE).
+///
+/// El decodificador por hardware gana siempre porque su rango es superior al
+/// del de software (257 frente a 256), así que se le baja a cero. Comprobado
+/// que con eso `decodebin` pasa de `vah264dec` a `avdec_h264`.
+///
+/// Si el usuario ya trae su propia preferencia en el entorno, se respeta: puede
+/// querer justo lo contrario.
+fn preferir_decodificacion_por_software() {
+    const VARIABLE: &str = "GST_PLUGIN_FEATURE_RANK";
+    if std::env::var_os(VARIABLE).is_some() {
+        return;
+    }
+    // `lp` es la variante de bajo consumo, y `vaapi*` el plugin antiguo.
+    std::env::set_var(
+        VARIABLE,
+        "vah264dec:0,vah264lpdec:0,vaapih264dec:0,vaapidecodebin:0",
+    );
+}
+
 fn main() {
     // Ojo: NO fijar `WEBKIT_DISABLE_DMABUF_RENDERER`. La 0.2.1 lo hacía y con
     // él `requestVideoFrameCallback` no dispara nunca (medido: 0 callbacks
@@ -36,6 +64,9 @@ fn main() {
     // Lo primero de todo: desde aquí, stdout y stderr quedan en el fichero de
     // registro y los procesos del webview lo heredan.
     logs::init();
+
+    // Decodificación de vídeo por software (ver la función).
+    preferir_decodificacion_por_software();
 
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.

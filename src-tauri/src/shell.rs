@@ -331,6 +331,7 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         (cfg.notifications, cfg.accounts.clone())
     };
     if !enabled {
+        eprintln!("wrusp: notificación descartada: están desactivadas en ajustes");
         return;
     }
 
@@ -340,6 +341,8 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         .unwrap_or(false);
     let active = app.state::<ActiveView>().0.lock().unwrap().clone();
     if visible && active == account_id {
+        // A propósito: la conversación la tienes delante.
+        eprintln!("wrusp: notificación descartada: esa cuenta está a la vista");
         return;
     }
 
@@ -349,7 +352,7 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         _ => title.to_string(),
     };
 
-    if let Err(err) = notify_rust::Notification::new()
+    match notify_rust::Notification::new()
         .summary(&title)
         .body(body)
         .appname("Wrusp")
@@ -357,7 +360,8 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         .icon("Wrusp")
         .show()
     {
-        eprintln!("wrusp: no se pudo mostrar la notificación ({err})");
+        Ok(_) => eprintln!("wrusp: notificación enviada al escritorio"),
+        Err(err) => eprintln!("wrusp: no se pudo mostrar la notificación ({err})"),
     }
 }
 

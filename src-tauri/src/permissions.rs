@@ -83,13 +83,20 @@ fn contestar_consultas_de_permiso(native: &webkit2gtk::WebView) {
                 && notification_origins().iter().any(|esperado| {
                     esperado.protocol() == origen.protocol() && esperado.host() == origen.host()
                 });
-            #[cfg(debug_assertions)]
-            println!(
-                "wrusp: consulta de permiso «{nombre}» de {}://{} → {}",
-                origen.protocol().unwrap_or_default(),
-                origen.host().unwrap_or_default(),
-                if permitido { "concedido" } else { "sin tocar" }
-            );
+            // Se registra en release: es el primer eslabón de las
+            // notificaciones y, cuando fallan, hay que poder verlo.
+            if nombre == "notifications" {
+                eprintln!(
+                    "wrusp: permiso «{nombre}» de {}://{} → {}",
+                    origen.protocol().unwrap_or_default(),
+                    origen.host().unwrap_or_default(),
+                    if permitido {
+                        "concedido"
+                    } else {
+                        "NO concedido (origen inesperado)"
+                    }
+                );
+            }
             if permitido {
                 ffi::webkit_permission_state_query_finish(
                     consulta,
@@ -279,9 +286,17 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             ctx.initialize_notification_permissions(&refs, &[]);
             // WebKit vuelve a pedir la lista cuando le conviene.
             ctx.connect_initialize_notification_permissions(move |ctx| {
-                #[cfg(debug_assertions)]
-                println!("wrusp: WebKit pide la lista de permisos de notificación");
                 let permitidos = notification_origins();
+                // En release también: es la línea que dice si la página va a
+                // arrancar con permiso para notificar.
+                eprintln!(
+                    "wrusp: WebKit pide los permisos de notificación → concedidos a {}",
+                    permitidos
+                        .iter()
+                        .map(|o| o.host().map(|h| h.to_string()).unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 let refs: Vec<&SecurityOrigin> = permitidos.iter().collect();
                 ctx.initialize_notification_permissions(&refs, &[]);
             });
@@ -325,6 +340,13 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
                 .body()
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+            // Sin contenido: el registro no es sitio para los mensajes de
+            // nadie. Basta saber que el motor entregó una.
+            eprintln!(
+                "wrusp: el motor entrega una notificación (cuenta {account_id}, {} y {} caracteres)",
+                title.chars().count(),
+                body.chars().count()
+            );
             crate::shell::notify_from_webkit(&app, &account_id, &title, &body);
             true // ya la mostramos nosotros
         });
