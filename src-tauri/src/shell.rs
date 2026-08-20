@@ -320,6 +320,13 @@ pub fn notify_from_webkit(app: &AppHandle, account_id: &str, title: &str, body: 
     });
 }
 
+/// Un aviso solo es redundante si el usuario está mirando ahora mismo la
+/// cuenta que lo produjo. «Ventana visible» no basta: puede estar tapada, en
+/// segundo plano o en otro escritorio.
+fn notification_is_redundant(window_focused: bool, active_account: &str, account_id: &str) -> bool {
+    window_focused && active_account == account_id
+}
+
 /// Lanza una notificación de escritorio por un mensaje nuevo.
 ///
 /// El título que manda WhatsApp Web es el nombre del contacto y el cuerpo, el
@@ -335,14 +342,14 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         return;
     }
 
-    let visible = app
+    let focused = app
         .get_window(MAIN_WINDOW)
-        .and_then(|w| w.is_visible().ok())
+        .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
     let active = app.state::<ActiveView>().0.lock().unwrap().clone();
-    if visible && active == account_id {
+    if notification_is_redundant(focused, &active, account_id) {
         // A propósito: la conversación la tienes delante.
-        eprintln!("wrusp: notificación descartada: esa cuenta está a la vista");
+        eprintln!("wrusp: notificación descartada: esa cuenta tiene el foco");
         return;
     }
 
@@ -780,7 +787,14 @@ pub fn sync_bounds(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{account_navigation_allowed, unread_count_from_title};
+    use super::{account_navigation_allowed, notification_is_redundant, unread_count_from_title};
+
+    #[test]
+    fn notifications_are_only_redundant_for_the_focused_account() {
+        assert!(notification_is_redundant(true, "personal", "personal"));
+        assert!(!notification_is_redundant(false, "personal", "personal"));
+        assert!(!notification_is_redundant(true, "personal", "trabajo"));
+    }
 
     #[test]
     fn account_views_only_accept_whatsapp_origins() {

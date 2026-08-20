@@ -24,17 +24,21 @@
 fn notification_origins() -> Vec<webkit2gtk::SecurityOrigin> {
     use webkit2gtk::SecurityOrigin;
 
-    let mut origins = vec![SecurityOrigin::new("https", "web.whatsapp.com", 443)];
+    let origins = vec![SecurityOrigin::new("https", "web.whatsapp.com", 443)];
 
     #[cfg(debug_assertions)]
-    if let Ok(test) = std::env::var("WRUSP_TEST_URL") {
-        if let Ok(url) = test.parse::<tauri::Url>() {
-            if let Some(host) = url.host_str() {
-                let port = url.port_or_known_default().unwrap_or(443);
-                origins.push(SecurityOrigin::new(url.scheme(), host, port));
+    let origins = {
+        let mut origins = origins;
+        if let Ok(test) = std::env::var("WRUSP_TEST_URL") {
+            if let Ok(url) = test.parse::<tauri::Url>() {
+                if let Some(host) = url.host_str() {
+                    let port = url.port_or_known_default().unwrap_or(443);
+                    origins.push(SecurityOrigin::new(url.scheme(), host, port));
+                }
             }
         }
-    }
+        origins
+    };
     origins
 }
 

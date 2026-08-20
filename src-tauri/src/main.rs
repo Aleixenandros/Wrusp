@@ -52,14 +52,33 @@ fn preferir_decodificacion_por_software() {
     );
 }
 
+/// Evita el sink GL de vídeo de WebKitGTK.
+///
+/// No es lo mismo que `WEBKIT_DISABLE_DMABUF_RENDERER`: esa variable apaga el
+/// renderizador DMA-BUF de toda la vista y deja de disparar
+/// `requestVideoFrameCallback`, que WhatsApp usa para revelar el reproductor.
+/// Esta otra variable solo hace que GStreamer entregue los fotogramas por el
+/// sink de memoria normal. En Fedora 44 con WebKitGTK 2.52 y GStreamer 1.28,
+/// el sink GL negocia texturas External OES que no puede volver a mapear
+/// (`Cannot map External OES textures`); WhatsApp lee el vídeo para pintar y
+/// termina recibiendo buffers inválidos. Banco de pruebas, H.264 1024x576:
+/// 345 fallos en 345 fotogramas con GL; 354/354 fotogramas y cero fallos con
+/// el sink normal. `requestVideoFrameCallback` sigue disparando.
+fn evitar_sink_gl_de_video() {
+    const VARIABLE: &str = "WEBKIT_GST_DISABLE_GL_SINK";
+    if std::env::var_os(VARIABLE).is_none() {
+        std::env::set_var(VARIABLE, "1");
+    }
+}
+
 fn main() {
     // Ojo: NO fijar `WEBKIT_DISABLE_DMABUF_RENDERER`. La 0.2.1 lo hacía y con
     // él `requestVideoFrameCallback` no dispara nunca (medido: 0 callbacks
     // frente a ~200 en 8 s sin la variable), y WhatsApp usa esa API para
     // revelar el vídeo al llegar el primer fotograma: el reproductor se
     // quedaba clavado en el póster con el tiempo corriendo. El renderizador
-    // por defecto reproduce bien; los vídeos que no arrancan son cosa de
-    // códecs del sistema (ver README).
+    // general se deja intacto; el que se desactiva más arriba es únicamente el
+    // sink GL de vídeo de GStreamer.
 
     // Lo primero de todo: desde aquí, stdout y stderr quedan en el fichero de
     // registro y los procesos del webview lo heredan.
@@ -67,6 +86,9 @@ fn main() {
 
     // Decodificación de vídeo por software (ver la función).
     preferir_decodificacion_por_software();
+
+    // Entrega de fotogramas por memoria normal (ver la función).
+    evitar_sink_gl_de_video();
 
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.

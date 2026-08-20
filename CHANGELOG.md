@@ -4,6 +4,13 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.7] — 2026-08-20
+
+### Corregido
+
+- **Los vídeos dejan de quedarse clavados después de unos fotogramas en Fedora 44.** WebKitGTK 2.52 y GStreamer 1.28 negocian en el sink GL texturas External OES que después no pueden volver a mapear; el registro real mostraba `Cannot map External OES textures`, `invalid video buffer received` y finalmente `Decode error`. Wrusp usa ahora el sink de memoria normal sin apagar el renderizador de toda la vista. Verificado con un H.264 de 1024×576 leído también desde canvas, como hace WhatsApp: el camino anterior produjo 345 buffers inválidos en 345 fotogramas; el nuevo entregó los 354 fotogramas, todos los callbacks y cero errores.
+- **Las notificaciones llegan cuando Wrusp está abierto pero en segundo plano.** Se estaban descartando siempre que la ventana fuese visible y la cuenta estuviese seleccionada, incluso cubierta por otra aplicación o situada en otro escritorio. Ahora solo se omiten cuando esa cuenta está seleccionada y Wrusp tiene realmente el foco.
+
 ## [0.3.6] — 2026-08-19
 
 ### Corregido
