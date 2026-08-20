@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.8] — 2026-08-20
+
+### Corregido
+
+- **Los vídeos MP4 grandes se reproducen desde el primer fotograma, sin una pantalla gris durante media reproducción.** WebKitGTK 2.52 obliga a pasar los vídeos `blob:` por `playbin3` y les aplica un búfer circular fijo de 2 MiB. Cuando el MP4 es mayor y tiene su índice al final —la forma en que WhatsApp entrega muchos vídeos—, GStreamer 1.28 recibe primero datos de la mitad y después los del inicio: el registro mostraba rangos mezclados, H.264/AAC corrupto y timestamps que retrocedían de 13,03 s a 0,06 s. Wrusp materializa únicamente esos blobs MP4 problemáticos por una ruta que evita el búfer, preservando la posición, el estado de reproducción y la promesa de `play()`. Verificado con el vídeo real que fallaba y con un MP4 de control de 5,7 MiB: 402 fotogramas decodificados, cero descartados y ningún error.
+
 ## [0.3.7] — 2026-08-20
 
 ### Corregido
