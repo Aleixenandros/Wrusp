@@ -119,6 +119,9 @@ cargo build --release
 3. Repite para más cuentas con el botón «+» de la barra lateral: cada una
    mantiene su sesión propia y cambias entre ellas con un clic.
 4. Cierra la ventana con libertad: Wrusp queda en la bandeja del sistema.
+5. Los ajustes (<kbd>Ctrl</kbd>+<kbd>P</kbd>) están ordenados por secciones en
+   un menú lateral: cuentas, apariencia, carpetas, comportamiento, atajos y
+   acerca de.
 
 Todos los datos se guardan en `~/.local/share/wrusp/`: `config.json` contiene
 la configuración y `profiles/` las sesiones. Borrar una cuenta desde la app

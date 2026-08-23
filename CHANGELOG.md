@@ -4,6 +4,19 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.9] — 2026-08-24
+
+### Corregido
+
+- **Copiar una imagen del chat copia la imagen, no su dirección.** Con el clic derecho sobre una foto y «Copiar imagen», lo que acababa en el portapapeles era `blob:https://web.whatsapp.com/…`; pegarlo en cualquier sitio daba ese texto. Medido con banco propio contra WebKitGTK 2.52: el motor **sí** sabe copiar imágenes (escribir `image/png` o `image/jpeg` desde la página deja la foto de verdad en el portapapeles del escritorio) y traer los bytes de la página a Wrusp cuesta 5 ms para 160 KB. Lo que falla es la acción del menú nativo cuando la imagen es un blob, que es como WhatsApp sirve todas las suyas. Wrusp sustituye esa entrada del menú por una propia que pide los bytes a la página y los deja en el portapapeles. Si es WhatsApp —y no el menú— quien copia la dirección, también se corrige.
+- **Los botones de minimizar, maximizar y cerrar dejan de quedarse muertos.** Los dibuja el gestor de ventanas, así que si no responden es que la aplicación no contesta. Había dos esperas síncronas en el hilo que dibuja la interfaz: la notificación de escritorio (una llamada D-Bus al servidor de notificaciones) y la lectura del portapapeles al pegar (una espera a que conteste otra aplicación). Como las notificaciones llegan cuando llegan, el bloqueo no tenía patrón. Ahora ninguna de las dos bloquea la ventana.
+- **Los iconos que salían en blanco en el selector.** De los 193 del catálogo, 14 no pintaban nada visible: seis traían el degradado sin convertir —el atributo era un objeto de JavaScript volcado como texto, que ningún navegador pinta— y a ocho les faltaba el fondo, así que quedaba el logo blanco sobre nada. Reparados y verificados uno a uno. El selector pinta además cada icono sobre un tablero de contraste medio: el catálogo tiene iconos blancos y negros, y sobre un fondo liso siempre había unos cuantos que parecían celdas vacías, en el tema claro o en el oscuro.
+- **Menos insistencia con «WhatsApp para Mac».** El disfraz de Chrome se quedaba corto: faltaba `window.chrome` —la comprobación más extendida para separar Chrome de Safari—, la lista de complementos del visor de PDF y un par de propiedades de `navigator` que WebKitGTK no tiene. Viéndonos como Safari, WhatsApp deducía Mac. Además, el anuncio se busca ahora también por su texto y no solo por el enlace a la tienda, y las ventanas emergentes se cierran por su propio botón.
+
+### Cambiado
+
+- **Los ajustes se ordenan con un menú lateral.** Estaban en una sola columna, con casi todo plegado dentro de desplegables. Ahora hay seis secciones —Cuentas, Apariencia, Carpetas, Comportamiento, Atajos y Acerca de— y se abre la última que estuvieras mirando. El tema pasa de la cabecera a Apariencia, junto al icono de la aplicación.
+
 ## [0.3.8] — 2026-08-20
 
 ### Corregido

@@ -119,6 +119,8 @@ cargo build --release
 3. Repeat for more accounts with the "+" button in the sidebar: each keeps its
    own session and you switch between them with a click.
 4. Close the window freely: Wrusp stays in the system tray.
+5. Settings (<kbd>Ctrl</kbd>+<kbd>P</kbd>) are organised into sections in a side
+   menu: accounts, appearance, folders, behaviour, shortcuts and about.
 
 All data lives in `~/.local/share/wrusp/`: `config.json` holds the settings and
 `profiles/` the sessions. Deleting an account from the app removes its profile

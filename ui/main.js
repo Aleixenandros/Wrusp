@@ -9,6 +9,34 @@ const formEl = document.getElementById("add-form");
 const nameEl = document.getElementById("add-name");
 const themeButtons = document.querySelectorAll(".theme-switch button");
 
+// ── Menú de secciones ───────────────────────────────────
+// Los ajustes eran una sola columna con todo apilado y medio escondido en
+// <details>; ahora cada cosa vive en su panel y el menú decide cuál se ve. La
+// elección se recuerda para que volver a ajustes no obligue a buscar otra vez.
+const navButtons = document.querySelectorAll(".nav button");
+const PANEL_POR_DEFECTO = "cuentas";
+
+function showPanel(name) {
+  let encontrado = false;
+  for (const btn of navButtons) {
+    const activo = btn.dataset.panel === name;
+    encontrado = encontrado || activo;
+    btn.classList.toggle("active", activo);
+    btn.setAttribute("aria-selected", String(activo));
+    document.getElementById(`panel-${btn.dataset.panel}`).hidden = !activo;
+  }
+  if (!encontrado) return showPanel(PANEL_POR_DEFECTO);
+  try {
+    localStorage.setItem("wrusp-panel", name);
+  } catch {
+    // Sin almacenamiento se pierde el recuerdo, no la navegación.
+  }
+}
+
+navButtons.forEach((btn) =>
+  btn.addEventListener("click", () => showPanel(btn.dataset.panel))
+);
+
 const media = window.matchMedia("(prefers-color-scheme: dark)");
 let themeMode = "system";
 
@@ -357,8 +385,10 @@ async function refresh() {
   }
 }
 
-// Lo llama Rust cuando se pulsa «+» en la barra lateral.
+// Lo llama Rust cuando se pulsa «+» en la barra lateral. El campo puede estar
+// en un panel que no se ve, así que primero se enseña el suyo.
 window.__wruspFocusAdd = () => {
+  showPanel("cuentas");
   nameEl.focus();
   nameEl.select();
 };
@@ -378,6 +408,14 @@ formEl.addEventListener("submit", async (ev) => {
 
 // ── Arranque ────────────────────────────────────────────
 (async function init() {
+  let recordado = null;
+  try {
+    recordado = localStorage.getItem("wrusp-panel");
+  } catch {
+    recordado = null;
+  }
+  showPanel(recordado || PANEL_POR_DEFECTO);
+
   try {
     themeMode = await invoke("get_theme");
   } catch {

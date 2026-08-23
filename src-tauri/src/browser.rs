@@ -22,41 +22,87 @@ const CHROME_VERSION: &str = "131";
 /// Oculta la promoción de la app nativa («Descarga WhatsApp para Mac»).
 ///
 /// Corregir `navigator.vendor` quitó la detección de Safari, pero WhatsApp
-/// sigue anunciando su app de escritorio en la pantalla de bienvenida, y en
-/// Wrusp no tiene sentido. Se localiza por el enlace de la tienda, no por
-/// clases CSS (que cambian en cada despliegue), y solo se oculta el contenedor
-/// si es pequeño respecto a la ventana, para no borrar media interfaz si
-/// WhatsApp reorganiza su árbol.
+/// sigue anunciando su app de escritorio —en la bienvenida, junto al código QR
+/// y como ventana emergente—, y en Wrusp no tiene sentido.
+///
+/// Se busca por dos vías, ninguna basada en clases CSS (cambian en cada
+/// despliegue): el enlace a la tienda y el propio texto del anuncio. Solo se
+/// oculta el contenedor si es pequeño respecto a la ventana, para no borrar
+/// media interfaz si WhatsApp reorganiza su árbol; las ventanas emergentes son
+/// la excepción, porque ocupan la pantalla entera a propósito, y ahí se
+/// intenta primero pulsar su botón de cerrar.
 ///
 /// Es cosmético: si algún día deja de encontrarlo, lo peor que pasa es que el
 /// anuncio vuelva a verse.
 pub fn hide_native_app_promo_script() -> String {
     r#"(function () {
   const TIENDAS = ['apps.apple.com', 'microsoft.com/store', 'aka.ms/', 'whatsapp.com/download'];
+  // Muy específicos a propósito: un patrón laxo se llevaría por delante
+  // mensajes normales del chat.
+  const ANUNCIOS = [
+    /whatsapp\s+(para|for)\s+(mac|windows|escritorio|desktop)/i,
+    /(descarga|descargar|download|get)\s+whatsapp\s+(para|for)\s/i,
+    /(consigue|descarga)\s+la\s+(app|aplicación)\s+de\s+escritorio/i,
+    /get\s+the\s+desktop\s+app/i,
+  ];
   const AREA_MAXIMA = 0.35; // del área de la ventana
+
+  const esAnuncio = (texto) => texto.length < 400 && ANUNCIOS.some((r) => r.test(texto));
+
+  // La tarjeta que envuelve al elemento, sin pasarse de tamaño.
+  function envoltorio(nodo) {
+    const limite = innerWidth * innerHeight * AREA_MAXIMA;
+    let objetivo = nodo;
+    let padre = nodo.parentElement;
+    for (let i = 0; i < 6 && padre && padre !== document.body; i++) {
+      const c = padre.getBoundingClientRect();
+      if (c.width * c.height > limite) break;
+      objetivo = padre;
+      padre = padre.parentElement;
+    }
+    return objetivo;
+  }
+
+  // Una emergente ocupa la pantalla entera, así que la regla del tamaño no
+  // vale: se cierra por su propio botón y, si no lo tiene, se quita la capa.
+  function cerrarEmergente(nodo) {
+    const capa = nodo.closest('[role="dialog"], [data-animate-modal-popup], [data-animate-modal-body]');
+    if (!capa) return false;
+    const cerrar = capa.querySelector(
+      'button[aria-label], div[role="button"][aria-label], [data-icon="x"], [data-icon="close"]'
+    );
+    if (cerrar) cerrar.click();
+    else {
+      let capaFija = capa;
+      while (capaFija && getComputedStyle(capaFija).position !== 'fixed') capaFija = capaFija.parentElement;
+      (capaFija || capa).style.display = 'none';
+    }
+    return true;
+  }
 
   function ocultar() {
     for (const enlace of document.querySelectorAll('a[href]')) {
       const href = enlace.href || '';
       if (!TIENDAS.some((t) => href.includes(t))) continue;
+      if (cerrarEmergente(enlace)) continue;
+      envoltorio(enlace).style.display = 'none';
+    }
 
-      const limite = innerWidth * innerHeight * AREA_MAXIMA;
-      let objetivo = enlace;
-      let nodo = enlace.parentElement;
-      // Sube hasta la tarjeta que lo envuelve, sin pasarse de tamaño.
-      for (let i = 0; i < 6 && nodo && nodo !== document.body; i++) {
-        const c = nodo.getBoundingClientRect();
-        if (c.width * c.height > limite) break;
-        objetivo = nodo;
-        nodo = nodo.parentElement;
-      }
-      objetivo.style.display = 'none';
+    // Sin enlace a la tienda: el anuncio puede ser un botón que abre otra cosa.
+    // Se busca el nodo más hondo que contenga el texto, para no subir de más.
+    for (const nodo of document.querySelectorAll('div, span, h1, h2, h3, p, button')) {
+      if (nodo.children.length > 3) continue;
+      const texto = (nodo.textContent || '').trim();
+      if (!esAnuncio(texto)) continue;
+      if (cerrarEmergente(nodo)) continue;
+      envoltorio(nodo).style.display = 'none';
     }
   }
 
   const arrancar = () => {
     ocultar();
-    // WhatsApp vuelve a pintar la bienvenida al cambiar de chat.
+    // WhatsApp vuelve a pintar la bienvenida al cambiar de chat, y la
+    // emergente aparece cuando le conviene.
     new MutationObserver(ocultar).observe(document.body, { childList: true, subtree: true });
   };
   if (document.body) arrancar();
@@ -294,17 +340,29 @@ pub fn fix_large_mp4_blobs_script() -> String {
     String::new()
 }
 
+/// Completa el disfraz de Chrome que el user-agent empieza.
+///
+/// El user-agent por sí solo no basta: WhatsApp mira además el objeto
+/// `navigator` y algunas señales que solo tiene Chrome. Con `vendor` de Apple
+/// y sin `window.chrome`, concluye que estás en Safari —o sea, en un Mac— y
+/// ofrece «WhatsApp para Mac» en la bienvenida, junto al código QR y en una
+/// ventana emergente.
+///
+/// Todo lo que se define aquí es lo que un Chrome real expone y WebKitGTK no:
+/// `window.chrome`, `userAgentData`, la lista de complementos del visor de PDF
+/// y un par de propiedades de `navigator`. No se toca nada que ya exista.
 pub fn disguise_script() -> String {
     format!(
         r#"(function () {{
-  const define = (prop, value) => {{
+  const define = (obj, prop, value) => {{
     try {{
-      Object.defineProperty(navigator, prop, {{ get: () => value, configurable: true }});
+      Object.defineProperty(obj, prop, {{ get: () => value, configurable: true }});
     }} catch (e) {{ /* si la propiedad no es redefinible, se deja como está */ }}
   }};
+  const enNavigator = (prop, value) => define(navigator, prop, value);
 
   // El motivo de todo esto: WebKit responde "Apple Computer, Inc.".
-  define('vendor', 'Google Inc.');
+  enNavigator('vendor', 'Google Inc.');
 
   const brands = [
     {{ brand: 'Not_A Brand', version: '24' }},
@@ -320,7 +378,7 @@ pub fn disguise_script() -> String {
   // WebKit no implementa userAgentData; sin él, algunos detectores descartan
   // Chrome pese al user-agent.
   if (!navigator.userAgentData) {{
-    define('userAgentData', {{
+    enNavigator('userAgentData', {{
       brands,
       mobile: false,
       platform,
@@ -338,6 +396,64 @@ pub fn disguise_script() -> String {
       toJSON: () => ({{ brands, mobile: false, platform }}),
     }});
   }}
+
+  // `!!window.chrome` es la comprobación más extendida para separar Chrome de
+  // Safari, y es justo la que nos delataba: WebKitGTK no lo tiene.
+  if (!window.chrome) {{
+    const inicio = Date.now();
+    window.chrome = {{
+      runtime: {{}},
+      app: {{ isInstalled: false }},
+      csi: () => ({{ startE: inicio, onloadT: inicio, pageT: Date.now() - inicio, tran: 15 }}),
+      loadTimes: () => ({{
+        commitLoadTime: inicio / 1000,
+        finishDocumentLoadTime: inicio / 1000,
+        firstPaintTime: inicio / 1000,
+        navigationType: 'Other',
+        wasFetchedViaSpdy: false,
+        wasNpnNegotiated: true,
+        npnNegotiatedProtocol: 'h2',
+      }}),
+    }};
+  }}
+
+  // Chrome expone siempre estos complementos del visor de PDF; en WebKitGTK la
+  // lista viene vacía, y una lista vacía es señal de Safari o de un navegador
+  // automatizado.
+  if (!navigator.plugins || navigator.plugins.length === 0) {{
+    const NOMBRES = [
+      ['PDF Viewer', 'internal-pdf-viewer'],
+      ['Chrome PDF Viewer', 'internal-pdf-viewer'],
+      ['Chromium PDF Viewer', 'internal-pdf-viewer'],
+      ['Microsoft Edge PDF Viewer', 'internal-pdf-viewer'],
+      ['WebKit built-in PDF', 'internal-pdf-viewer'],
+    ];
+    const tipos = ['application/pdf', 'text/pdf'].map((type) => ({{
+      type, suffixes: 'pdf', description: 'Portable Document Format',
+    }}));
+    const lista = NOMBRES.map(([name, filename]) => ({{
+      name, filename, description: 'Portable Document Format',
+      length: tipos.length, item: (i) => tipos[i] || null, namedItem: (t) => tipos.find((x) => x.type === t) || null,
+    }}));
+    lista.item = (i) => lista[i] || null;
+    lista.namedItem = (n) => lista.find((p) => p.name === n) || null;
+    lista.refresh = () => {{}};
+    enNavigator('plugins', lista);
+    enNavigator('mimeTypes', Object.assign(tipos.slice(), {{
+      item: (i) => tipos[i] || null,
+      namedItem: (t) => tipos.find((x) => x.type === t) || null,
+    }}));
+  }}
+
+  // Detalles sueltos que Chrome tiene y WebKitGTK no. Solo se rellenan si
+  // faltan: si el motor los añade algún día, manda el motor.
+  if (navigator.pdfViewerEnabled === undefined) enNavigator('pdfViewerEnabled', true);
+  if (navigator.deviceMemory === undefined) enNavigator('deviceMemory', 8);
+  if (navigator.maxTouchPoints === undefined) enNavigator('maxTouchPoints', 0);
+
+  // Rastros que solo deja Safari: verlos basta para descartar Chrome.
+  try {{ delete window.safari; }} catch (e) {{ /* no siempre es borrable */ }}
+  if ('standalone' in navigator) enNavigator('standalone', undefined);
 }})();"#,
         v = CHROME_VERSION
     )

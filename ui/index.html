@@ -16,131 +16,171 @@
           <p class="subtitle">WhatsApp no oficial para Linux</p>
         </div>
       </div>
-      <div class="theme-switch" role="group" aria-label="Tema">
-        <button data-mode="system" title="Seguir al sistema">Auto</button>
-        <button data-mode="light" title="Modo claro">☀</button>
-        <button data-mode="dark" title="Modo oscuro">☾</button>
-      </div>
     </header>
 
-    <section class="accounts">
-      <h2>Cuentas</h2>
-      <ul id="account-list"></ul>
-      <p id="empty" class="empty" hidden>
-        Todavía no hay cuentas. Añade la primera aquí abajo.
-      </p>
-      <form id="add-form">
-        <input
-          id="add-name"
-          type="text"
-          placeholder="Nombre de la cuenta (p. ej. Personal)"
-          autocomplete="off"
-          maxlength="40"
-        />
-        <button type="submit" class="primary">Añadir cuenta</button>
-      </form>
-      <p class="hint">
-        Cada cuenta mantiene su propia sesión de WhatsApp Web, aislada del
-        resto. La primera vez tendrás que escanear el código QR desde el móvil.
-      </p>
-    </section>
+    <div class="layout">
+      <!-- Menú de secciones. Cada botón enseña un panel y esconde el resto. -->
+      <nav class="nav" role="tablist" aria-label="Secciones de ajustes">
+        <button type="button" role="tab" data-panel="cuentas">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 19v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V19"/><circle cx="9.5" cy="7.5" r="3.5"/><path d="M17 11.5a3 3 0 1 0-1.8-5.4M21 19v-1.2a3.6 3.6 0 0 0-2.7-3.4"/></svg>
+          <span>Cuentas</span>
+        </button>
+        <button type="button" role="tab" data-panel="apariencia">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/></svg>
+          <span>Apariencia</span>
+        </button>
+        <button type="button" role="tab" data-panel="carpetas">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h9A1.5 1.5 0 0 1 21 10v7.5A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+          <span>Carpetas</span>
+        </button>
+        <button type="button" role="tab" data-panel="comportamiento">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg>
+          <span>Comportamiento</span>
+        </button>
+        <button type="button" role="tab" data-panel="atajos">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></svg>
+          <span>Atajos</span>
+        </button>
+        <button type="button" role="tab" data-panel="acerca">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.8v.01"/></svg>
+          <span>Acerca de</span>
+        </button>
+      </nav>
 
-    <section class="icon-picker">
-      <details id="icon-details">
-        <summary>
-          <span>Icono de la aplicación</span>
-          <img id="icon-current" class="icon-current" alt="" />
-        </summary>
-        <input
-          id="icon-search"
-          type="text"
-          placeholder="Buscar icono (p. ej. orange, wrusp, business…)"
-          autocomplete="off"
-        />
-        <div id="icon-grid" class="icon-grid"></div>
-      </details>
-    </section>
+      <div class="panels">
+        <!-- ── Cuentas ─────────────────────────────────── -->
+        <section class="panel accounts" id="panel-cuentas" role="tabpanel">
+          <h2>Cuentas</h2>
+          <ul id="account-list"></ul>
+          <p id="empty" class="empty" hidden>
+            Todavía no hay cuentas. Añade la primera aquí abajo.
+          </p>
+          <form id="add-form">
+            <input
+              id="add-name"
+              type="text"
+              placeholder="Nombre de la cuenta (p. ej. Personal)"
+              autocomplete="off"
+              maxlength="40"
+            />
+            <button type="submit" class="primary">Añadir cuenta</button>
+          </form>
+          <p class="hint">
+            Cada cuenta mantiene su propia sesión de WhatsApp Web, aislada del
+            resto. La primera vez tendrás que escanear el código QR desde el
+            móvil. Se cambia de cuenta desde la barra lateral.
+          </p>
+        </section>
 
-    <section class="folders">
-      <details>
-        <summary>Carpetas</summary>
-        <label class="folder-row">
-          <span>Descargas</span>
-          <input id="download-dir" type="text" placeholder="" autocomplete="off" />
-          <button type="button" data-pick="download-dir">Elegir…</button>
-        </label>
-        <label class="folder-row">
-          <span>Temporales</span>
-          <input id="temp-dir" type="text" placeholder="" autocomplete="off" />
-          <button type="button" data-pick="temp-dir">Elegir…</button>
-        </label>
-        <label class="folder-row">
-          <span>Registros</span>
-          <input id="log-dir" type="text" placeholder="" autocomplete="off" />
-          <button type="button" data-pick="log-dir">Elegir…</button>
-          <button type="button" id="open-logs" title="Abrir la carpeta de registros">Abrir</button>
-        </label>
-        <p class="hint">
-          Déjalas vacías para usar las del sistema. Los cambios de temporales y
-          registros se aplican al reiniciar Wrusp.
-        </p>
-        <p id="folder-error" class="error" hidden></p>
-      </details>
-    </section>
+        <!-- ── Apariencia ──────────────────────────────── -->
+        <section class="panel appearance" id="panel-apariencia" role="tabpanel" hidden>
+          <h2>Apariencia</h2>
+          <div class="field">
+            <span class="field-label">Tema</span>
+            <div class="theme-switch" role="group" aria-label="Tema">
+              <button data-mode="system" title="Seguir al sistema">Auto</button>
+              <button data-mode="light" title="Modo claro">☀ Claro</button>
+              <button data-mode="dark" title="Modo oscuro">☾ Oscuro</button>
+            </div>
+          </div>
+          <p class="hint">
+            El tema se aplica a esta ventana y a las vistas de WhatsApp.
+          </p>
 
-    <section class="behaviour">
-      <label class="toggle">
-        <input data-toggle="closeToTray" type="checkbox" />
-        <span>Al cerrar la ventana, seguir en la bandeja</span>
-      </label>
-      <label class="toggle">
-        <input data-toggle="notifications" type="checkbox" />
-        <span>Avisar de mensajes nuevos con una notificación</span>
-      </label>
-      <p class="hint">Los avisos son genéricos: CEF no expone a la aplicación el contenido de las notificaciones del service worker.</p>
-    </section>
+          <div class="field field-icon">
+            <span class="field-label">Icono de la aplicación</span>
+            <img id="icon-current" class="icon-current" alt="" />
+          </div>
+          <input
+            id="icon-search"
+            type="text"
+            placeholder="Buscar icono (p. ej. orange, business, ferris…)"
+            autocomplete="off"
+          />
+          <div id="icon-grid" class="icon-grid"></div>
+          <p class="hint">
+            Se usa en la bandeja del sistema y en la barra de tareas, con la
+            insignia de mensajes sin leer encima.
+          </p>
+        </section>
 
-    <section class="shortcuts">
-      <details>
-        <summary>Atajos de teclado</summary>
-        <ul class="keys">
-          <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd><span>Cambiar de cuenta</span></li>
-          <li><kbd>Ctrl</kbd>+<kbd>P</kbd><span>Ajustes</span></li>
-          <li><kbd>Ctrl</kbd>+<kbd>U</kbd><span>Añadir cuenta</span></li>
-          <li><kbd>Ctrl</kbd>+<kbd>W</kbd><span>Ocultar en la bandeja</span></li>
-          <li><kbd>Ctrl</kbd>+<kbd>Q</kbd><span>Salir</span></li>
-          <li><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd><span>Zoom (se recuerda por cuenta)</span></li>
-          <li><kbd>F5</kbd><span>Recargar la vista</span></li>
-        </ul>
-      </details>
-    </section>
+        <!-- ── Carpetas ────────────────────────────────── -->
+        <section class="panel folders" id="panel-carpetas" role="tabpanel" hidden>
+          <h2>Carpetas</h2>
+          <label class="folder-row">
+            <span>Descargas</span>
+            <input id="download-dir" type="text" placeholder="" autocomplete="off" />
+            <button type="button" data-pick="download-dir">Elegir…</button>
+          </label>
+          <label class="folder-row">
+            <span>Temporales</span>
+            <input id="temp-dir" type="text" placeholder="" autocomplete="off" />
+            <button type="button" data-pick="temp-dir">Elegir…</button>
+          </label>
+          <label class="folder-row">
+            <span>Registros</span>
+            <input id="log-dir" type="text" placeholder="" autocomplete="off" />
+            <button type="button" data-pick="log-dir">Elegir…</button>
+            <button type="button" id="open-logs" title="Abrir la carpeta de registros">Abrir</button>
+          </label>
+          <p class="hint">
+            Déjalas vacías para usar las del sistema. Los cambios de temporales
+            y registros se aplican al reiniciar Wrusp.
+          </p>
+          <p id="folder-error" class="error" hidden></p>
+        </section>
 
-    <section class="about">
-      <details>
-        <summary>Acerca de Wrusp</summary>
-        <p class="about-version">
-          Versión <strong id="about-version">…</strong>
-          <span id="about-update" class="about-update"></span>
-        </p>
-        <p class="hint">
-          Cliente de escritorio no oficial de WhatsApp, escrito en Rust con
-          Tauri. No está afiliado ni respaldado por WhatsApp ni Meta.
-        </p>
-        <div class="about-links">
-          <button type="button" id="check-updates">Comprobar actualizaciones</button>
-          <button type="button" data-link="repository">Código fuente</button>
-          <button type="button" data-link="issues">Informar de un fallo</button>
-          <button type="button" data-link="license">Licencia (Apache-2.0)</button>
-        </div>
-      </details>
-    </section>
+        <!-- ── Comportamiento ──────────────────────────── -->
+        <section class="panel behaviour" id="panel-comportamiento" role="tabpanel" hidden>
+          <h2>Comportamiento</h2>
+          <label class="toggle">
+            <input data-toggle="closeToTray" type="checkbox" />
+            <span>Al cerrar la ventana, seguir en la bandeja</span>
+          </label>
+          <label class="toggle">
+            <input data-toggle="notifications" type="checkbox" />
+            <span>Avisar de mensajes nuevos con una notificación</span>
+          </label>
+          <p class="hint">
+            Las notificaciones salen del propio aviso de WhatsApp, con el
+            remitente y el mensaje. No se avisa de la cuenta que tienes delante.
+          </p>
+        </section>
 
-    <footer class="footer">
-      <p>
-        Cambia de cuenta desde la barra lateral. Al cerrar la ventana, Wrusp
-        sigue en la bandeja del sistema.
-      </p>
-    </footer>
+        <!-- ── Atajos ──────────────────────────────────── -->
+        <section class="panel shortcuts" id="panel-atajos" role="tabpanel" hidden>
+          <h2>Atajos de teclado</h2>
+          <ul class="keys">
+            <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd><span>Cambiar de cuenta</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>P</kbd><span>Ajustes</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>U</kbd><span>Añadir cuenta</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>W</kbd><span>Ocultar en la bandeja</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>Q</kbd><span>Salir</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd><span>Zoom (se recuerda por cuenta)</span></li>
+            <li><kbd>F5</kbd><span>Recargar la vista</span></li>
+          </ul>
+        </section>
+
+        <!-- ── Acerca de ───────────────────────────────── -->
+        <section class="panel about" id="panel-acerca" role="tabpanel" hidden>
+          <h2>Acerca de Wrusp</h2>
+          <p class="about-version">
+            Versión <strong id="about-version">…</strong>
+            <span id="about-update" class="about-update"></span>
+          </p>
+          <p class="hint">
+            Cliente de escritorio no oficial de WhatsApp, escrito en Rust con
+            Tauri. No está afiliado ni respaldado por WhatsApp ni Meta.
+          </p>
+          <div class="about-links">
+            <button type="button" id="check-updates">Comprobar actualizaciones</button>
+            <button type="button" data-link="repository">Código fuente</button>
+            <button type="button" data-link="issues">Informar de un fallo</button>
+            <button type="button" data-link="license">Licencia (Apache-2.0)</button>
+          </div>
+        </section>
+      </div>
+    </div>
   </main>
   <script src="main.js"></script>
 </body>

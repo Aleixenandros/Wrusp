@@ -64,6 +64,12 @@ pub fn soltar(app: &AppHandle, etiqueta: &str, rutas: Vec<PathBuf>, x: i64, y: i
 
 /// Entrega al chat lo que haya en el portapapeles: los ficheros copiados en el
 /// gestor de ficheros o, si no los hay, la imagen.
+///
+/// Se pide por la vía asíncrona (`request_*`) y no por `wait_for_*`: esta
+/// función corre en el hilo de GTK, y la espera síncrona lo deja parado hasta
+/// que conteste el dueño del portapapeles —otra aplicación, que puede tardar o
+/// no contestar—. Con la interfaz parada, el gestor de ventanas da la
+/// aplicación por colgada y sus botones dejan de responder.
 #[cfg(target_os = "linux")]
 pub fn pegar(app: &AppHandle, etiqueta: &str) {
     use gtk::gdk;
@@ -75,38 +81,48 @@ pub fn pegar(app: &AppHandle, etiqueta: &str) {
         return;
     };
 
+    let app = app.clone();
+    let etiqueta = etiqueta.to_string();
+
     // Un fichero copiado conserva nombre y tipo, así que tiene preferencia
     // sobre la imagen que el escritorio ofrezca del mismo contenido.
-    let rutas: Vec<Entrada> = portapapeles
-        .wait_for_uris()
-        .iter()
-        .filter_map(|uri| uri.parse::<tauri::Url>().ok())
-        .filter_map(|url| url.to_file_path().ok())
-        .filter(|ruta| ruta.is_file())
-        .map(Entrada::Ruta)
-        .collect();
-    if !rutas.is_empty() {
-        entregar(app, etiqueta, rutas, DONDE_TOCA, DONDE_TOCA);
-        return;
-    }
+    portapapeles.request_contents(
+        &gdk::Atom::intern("text/uri-list"),
+        move |papeles, datos| {
+            let rutas: Vec<Entrada> = datos
+                .uris()
+                .iter()
+                .filter_map(|uri| uri.parse::<tauri::Url>().ok())
+                .filter_map(|url| url.to_file_path().ok())
+                .filter(|ruta| ruta.is_file())
+                .map(Entrada::Ruta)
+                .collect();
+            if !rutas.is_empty() {
+                entregar(&app, &etiqueta, rutas, DONDE_TOCA, DONDE_TOCA);
+                return;
+            }
 
-    let Some(imagen) = portapapeles.wait_for_image() else {
-        return; // no había nada que Wrusp pueda adjuntar
-    };
-    match imagen.save_to_bufferv("png", &[]) {
-        Ok(datos) => entregar(
-            app,
-            etiqueta,
-            vec![Entrada::Bytes {
-                nombre: "imagen-pegada.png".to_string(),
-                tipo: "image/png".to_string(),
-                datos,
-            }],
-            DONDE_TOCA,
-            DONDE_TOCA,
-        ),
-        Err(err) => eprintln!("wrusp: no se pudo convertir la imagen pegada ({err})"),
-    }
+            papeles.request_image(move |_, imagen| {
+                let Some(imagen) = imagen else {
+                    return; // no había nada que Wrusp pueda adjuntar
+                };
+                match imagen.save_to_bufferv("png", &[]) {
+                    Ok(datos) => entregar(
+                        &app,
+                        &etiqueta,
+                        vec![Entrada::Bytes {
+                            nombre: "imagen-pegada.png".to_string(),
+                            tipo: "image/png".to_string(),
+                            datos,
+                        }],
+                        DONDE_TOCA,
+                        DONDE_TOCA,
+                    ),
+                    Err(err) => eprintln!("wrusp: no se pudo convertir la imagen pegada ({err})"),
+                }
+            });
+        },
+    );
 }
 
 /// En Windows y macOS el motor sí le entrega a la página lo que se pega.
@@ -219,7 +235,7 @@ fn empujar(
 
 /// Base64 estándar (RFC 4648). A mano: son seis líneas y ahorra una
 /// dependencia para lo único que hace falta, escribirlo.
-fn base64(datos: &[u8]) -> String {
+pub(crate) fn base64(datos: &[u8]) -> String {
     const ALFABETO: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut salida = String::with_capacity(datos.len().div_ceil(3) * 4);
     for grupo in datos.chunks(3) {

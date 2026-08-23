@@ -9,6 +9,7 @@
 mod accounts;
 mod badge;
 mod browser;
+mod clipboard;
 mod config;
 mod filedrop;
 mod icon;

@@ -359,17 +359,27 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         _ => title.to_string(),
     };
 
-    match notify_rust::Notification::new()
-        .summary(&title)
-        .body(body)
-        .appname("Wrusp")
-        // El icono lo resuelve el escritorio a partir del nombre del .desktop.
-        .icon("Wrusp")
-        .show()
-    {
-        Ok(_) => eprintln!("wrusp: notificación enviada al escritorio"),
-        Err(err) => eprintln!("wrusp: no se pudo mostrar la notificación ({err})"),
-    }
+    // Fuera del hilo principal a propósito: `show()` es una llamada D-Bus
+    // síncrona al servidor de notificaciones y se hace desde donde llega la
+    // señal de WebKit, que es el hilo de GTK. Un servidor lento —o ausente—
+    // dejaba la interfaz congelada mientras tanto, y con ella los botones de
+    // minimizar, maximizar y cerrar, que el gestor de ventanas no puede
+    // atender si la aplicación no responde. Nada de esto toca la interfaz, así
+    // que no hay motivo para bloquear el hilo que sí la dibuja.
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        match notify_rust::Notification::new()
+            .summary(&title)
+            .body(&body)
+            .appname("Wrusp")
+            // El icono lo resuelve el escritorio a partir del nombre del .desktop.
+            .icon("Wrusp")
+            .show()
+        {
+            Ok(_) => eprintln!("wrusp: notificación enviada al escritorio"),
+            Err(err) => eprintln!("wrusp: no se pudo mostrar la notificación ({err})"),
+        }
+    });
 }
 
 /// Registra los no leídos de una cuenta y refresca bandeja, título y barra.
@@ -591,6 +601,7 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))
         .initialization_script(aislado(rail::runtime_script(&account.id)))
         .initialization_script(aislado(crate::filedrop::SCRIPT.to_owned()))
+        .initialization_script(aislado(crate::clipboard::SCRIPT.to_owned()))
         // Cada descarga pregunta dónde guardarse; la carpeta configurada en
         // ajustes es el punto de partida del diálogo.
         .on_download(|webview, event| {
@@ -637,6 +648,7 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
     // navegador no admite notas de voz ni cámara— ni nos entrega las
     // notificaciones del service worker.
     crate::permissions::configure(app, &view, &account.id);
+    crate::clipboard::configure(&view);
 
     // El motor entrega el soltado con la ruta del fichero, pero sin construir
     // el `File` que espera la página, así que arrastrar algo a un chat no hacía

@@ -58,9 +58,111 @@ body {
   padding: 20px;
   gap: 18px;
   /* La ventana es ancha (la comparte con las vistas de WhatsApp), pero los
-     ajustes se leen mejor en una columna estrecha. */
-  max-width: 620px;
+     ajustes se leen mejor sin ocupar todo el ancho. */
+  max-width: 900px;
   margin: 0 auto;
+}
+
+/* ── Menú de secciones + panel ────────────────────────── */
+.layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.nav {
+  flex: 0 0 190px;
+  position: sticky;
+  top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav button:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.nav button.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.nav svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav button.active svg {
+  stroke: var(--accent);
+}
+
+.panels {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* Fila de «etiqueta a la izquierda, control a la derecha». */
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.field-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.field-icon {
+  margin-top: 14px;
 }
 
 /* ── Cabecera ─────────────────────────────────────────── */
@@ -101,6 +203,7 @@ h1 {
 
 .theme-switch {
   display: flex;
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
@@ -171,30 +274,20 @@ button.primary:hover {
 }
 
 /* ── Selector de icono ────────────────────────────────── */
-.icon-picker details {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
-}
-
-.icon-picker summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 14px;
-  list-style: none;
-}
-
-.icon-picker summary::-webkit-details-marker {
-  display: none;
-}
-
 .icon-current {
   width: 26px;
   height: 26px;
+}
+
+/* El icono elegido comparte el fondo de la rejilla, por lo mismo. */
+.field-icon .icon-current {
+  border-radius: 6px;
+  background-color: #eef0ef;
+  background-image:
+    linear-gradient(45deg, #ccd2cf 25%, transparent 25%, transparent 75%, #ccd2cf 75%),
+    linear-gradient(45deg, #ccd2cf 25%, transparent 25%, transparent 75%, #ccd2cf 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
 }
 
 #icon-search {
@@ -204,20 +297,28 @@ button.primary:hover {
 
 .icon-grid {
   margin-top: 10px;
-  max-height: 200px;
+  max-height: 260px;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
   gap: 6px;
 }
 
+/* Tablero de contraste medio, igual en los dos temas: el catálogo tiene
+   iconos blancos y iconos negros, y sobre un fondo liso siempre hay unos
+   cuantos que parecen celdas vacías. Sobre el tablero se ven todos. */
 .icon-grid button {
   border: 2px solid transparent;
-  background: transparent;
   border-radius: 10px;
   padding: 5px;
   cursor: pointer;
   line-height: 0;
+  background-color: #eef0ef;
+  background-image:
+    linear-gradient(45deg, #ccd2cf 25%, transparent 25%, transparent 75%, #ccd2cf 75%),
+    linear-gradient(45deg, #ccd2cf 25%, transparent 25%, transparent 75%, #ccd2cf 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
 }
 
 .icon-grid button:hover {
@@ -234,24 +335,14 @@ button.primary:hover {
 }
 
 /* ── Carpetas ─────────────────────────────────────────── */
-.folders details {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
-}
-
-.folders summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 14px;
-}
-
 .folder-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+}
+
+.folder-row + .folder-row {
+  margin-top: 8px;
 }
 
 .folder-row span {
@@ -318,22 +409,12 @@ button.primary:hover {
   cursor: pointer;
 }
 
-.shortcuts details {
+.keys {
+  list-style: none;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 10px 12px;
-}
-
-.shortcuts summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.keys {
-  list-style: none;
-  margin-top: 10px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -469,21 +550,11 @@ kbd {
 }
 
 /* ── Acerca de ────────────────────────────────────────── */
-.about details {
+.about-version {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 10px 12px;
-}
-
-.about summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.about-version {
-  margin-top: 10px;
+  padding: 11px 12px;
   font-size: 14px;
 }
 
@@ -524,9 +595,27 @@ kbd {
   border-color: var(--text-dim);
 }
 
-/* ── Pie ──────────────────────────────────────────────── */
-.footer {
-  color: var(--text-dim);
-  font-size: 12px;
-  text-align: center;
+/* ── Ventana estrecha ─────────────────────────────────── */
+/* Con la barra lateral de cuentas comiendo 60 px, por debajo de esto las dos
+   columnas dejan de caber: el menú pasa a ser una fila arriba. */
+@media (max-width: 680px) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .nav {
+    position: static;
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .nav button {
+    width: auto;
+  }
+
+  .panels {
+    width: 100%;
+  }
 }

@@ -9,6 +9,11 @@ del frontend).
 - `manifest.json` es la lista que lee el selector; lo genera el script, no se
   edita a mano.
 
+Al añadir un icono conviene rasterizarlo y mirar que pinte algo: el catálogo
+viene de una conversión externa y ya trajo catorce rotos —degradados volcados
+como texto (`fill="{'type': 'linear', …}"`, que ningún navegador pinta) y logos
+blancos a los que les faltaba el fondo— (ver ADR-029).
+
 El icono por defecto de la aplicación es **`whatsapp-logo-2449-orange`**,
 declarado en `DEFAULT_ICON` (`src-tauri/src/config.rs`).
 
