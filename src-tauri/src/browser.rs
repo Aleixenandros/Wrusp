@@ -25,12 +25,19 @@ const CHROME_VERSION: &str = "131";
 /// sigue anunciando su app de escritorio —en la bienvenida, junto al código QR
 /// y como ventana emergente—, y en Wrusp no tiene sentido.
 ///
-/// Se busca por dos vías, ninguna basada en clases CSS (cambian en cada
-/// despliegue): el enlace a la tienda y el propio texto del anuncio. Solo se
-/// oculta el contenedor si es pequeño respecto a la ventana, para no borrar
-/// media interfaz si WhatsApp reorganiza su árbol; las ventanas emergentes son
-/// la excepción, porque ocupan la pantalla entera a propósito, y ahí se
-/// intenta primero pulsar su botón de cerrar.
+/// Se busca por el enlace a la tienda y por el texto del anuncio, nunca por
+/// clases CSS (cambian en cada despliegue). Lo delicado es **hasta dónde** se
+/// sube al ocultar: el anuncio de la bienvenida vive dentro del panel de
+/// conversación, así que subir un padre de más deja el panel entero en
+/// `display: none` y los chats dejan de abrirse. La 0.3.9 hizo justo eso,
+/// porque el único freno era el tamaño del candidato y un elemento sin layout
+/// mide cero, que pasaba por «pequeño».
+///
+/// Ahora el ascenso para ante cualquier señal de estructura: un candidato sin
+/// medidas, demasiado grande, con demasiados descendientes o que contenga la
+/// lista de chats o la caja de escritura no se toca. Y lo ocultado se guarda:
+/// en cuanto el anuncio desaparece de su texto, vuelve a mostrarse, de modo que
+/// un error de puntería dura una pasada y no toda la sesión.
 ///
 /// Es cosmético: si algún día deja de encontrarlo, lo peor que pasa es que el
 /// anuncio vuelva a verse.
@@ -45,20 +52,50 @@ pub fn hide_native_app_promo_script() -> String {
     /(consigue|descarga)\s+la\s+(app|aplicación)\s+de\s+escritorio/i,
     /get\s+the\s+desktop\s+app/i,
   ];
-  const AREA_MAXIMA = 0.35; // del área de la ventana
+  const AREA_MAXIMA = 0.35;   // del área de la ventana
+  const HIJOS_MAXIMOS = 60;   // más que esto ya no es una tarjeta
+  // Anclas genéricas de la estructura de la página: si el candidato contiene
+  // alguna, es armazón y no un anuncio.
+  const ESTRUCTURA = '[role="grid"], [role="textbox"], [role="application"], #main, #side, #app';
+  // Todo lo que sea contenido de los chats: ni el texto de un mensaje ni un
+  // enlace que alguien haya enviado se tocan jamás. Sin esto, un «¿usas
+  // WhatsApp para Mac?» en una conversación desaparecía del chat.
+  const CONVERSACION = '[role="row"], [role="listitem"], [role="log"], [role="grid"], [role="application"], [data-id]';
+
+  let ocultos = new Set();
+
+  const anotar = (texto) => {
+    if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
+  };
 
   const esAnuncio = (texto) => texto.length < 400 && ANUNCIOS.some((r) => r.test(texto));
+  const esContenidoDeChat = (nodo) => !!nodo.closest(CONVERSACION);
 
-  // La tarjeta que envuelve al elemento, sin pasarse de tamaño.
+  // El anuncio por texto solo se busca donde puede estar: la pantalla sin
+  // conversación abierta (bienvenida y código QR) y las ventanas emergentes.
+  // Con un chat delante, este camino ni se recorre.
+  const hayConversacionAbierta = () => !!document.querySelector('[role="application"], [role="row"]');
+
+  // ¿Se puede ocultar esto sin llevarse por delante media interfaz?
+  function sePuedeOcultar(nodo) {
+    if (!nodo || nodo === document.body || nodo === document.documentElement) return false;
+    if (nodo.querySelector(ESTRUCTURA)) return false;
+    if (nodo.getElementsByTagName('*').length > HIJOS_MAXIMOS) return false;
+    const c = nodo.getBoundingClientRect();
+    // Sin medidas no hay forma de juzgar el tamaño: se espera a la pasada
+    // siguiente en vez de arriesgarse.
+    if (c.width === 0 || c.height === 0) return false;
+    return c.width * c.height <= innerWidth * innerHeight * AREA_MAXIMA;
+  }
+
+  // La tarjeta que envuelve al elemento, parando en cuanto deje de ser segura.
   function envoltorio(nodo) {
-    const limite = innerWidth * innerHeight * AREA_MAXIMA;
+    if (!sePuedeOcultar(nodo)) return null;
     let objetivo = nodo;
-    let padre = nodo.parentElement;
-    for (let i = 0; i < 6 && padre && padre !== document.body; i++) {
-      const c = padre.getBoundingClientRect();
-      if (c.width * c.height > limite) break;
+    for (let i = 0; i < 6; i++) {
+      const padre = objetivo.parentElement;
+      if (!sePuedeOcultar(padre)) break;
       objetivo = padre;
-      padre = padre.parentElement;
     }
     return objetivo;
   }
@@ -71,39 +108,85 @@ pub fn hide_native_app_promo_script() -> String {
     const cerrar = capa.querySelector(
       'button[aria-label], div[role="button"][aria-label], [data-icon="x"], [data-icon="close"]'
     );
-    if (cerrar) cerrar.click();
-    else {
-      let capaFija = capa;
-      while (capaFija && getComputedStyle(capaFija).position !== 'fixed') capaFija = capaFija.parentElement;
-      (capaFija || capa).style.display = 'none';
+    if (cerrar) {
+      cerrar.click();
+      anotar('promo: emergente cerrada por su botón');
+      return true;
     }
+    let capaFija = capa;
+    while (capaFija && getComputedStyle(capaFija).position !== 'fixed') capaFija = capaFija.parentElement;
+    const objetivo = capaFija || capa;
+    if (objetivo.querySelector(ESTRUCTURA)) return false; // no era una emergente
+    objetivo.style.display = 'none';
+    anotar('promo: emergente oculta');
     return true;
   }
 
   function ocultar() {
+    const nuevos = new Set();
+
+    const esconder = (nodo, motivo) => {
+      if (esContenidoDeChat(nodo)) return;
+      if (cerrarEmergente(nodo)) return;
+      const objetivo = envoltorio(nodo);
+      if (!objetivo) return;
+      if (!ocultos.has(objetivo)) anotar('promo oculta por ' + motivo + ': <' + objetivo.tagName + '>');
+      objetivo.style.display = 'none';
+      nuevos.add(objetivo);
+    };
+
     for (const enlace of document.querySelectorAll('a[href]')) {
       const href = enlace.href || '';
-      if (!TIENDAS.some((t) => href.includes(t))) continue;
-      if (cerrarEmergente(enlace)) continue;
-      envoltorio(enlace).style.display = 'none';
+      if (TIENDAS.some((t) => href.includes(t))) esconder(enlace, 'enlace');
     }
 
     // Sin enlace a la tienda: el anuncio puede ser un botón que abre otra cosa.
-    // Se busca el nodo más hondo que contenga el texto, para no subir de más.
-    for (const nodo of document.querySelectorAll('div, span, h1, h2, h3, p, button')) {
-      if (nodo.children.length > 3) continue;
-      const texto = (nodo.textContent || '').trim();
-      if (!esAnuncio(texto)) continue;
-      if (cerrarEmergente(nodo)) continue;
-      envoltorio(nodo).style.display = 'none';
+    // Se mira solo el nodo más hondo que contiene el texto, para no subir de más.
+    const emergentes = document.querySelectorAll('[role="dialog"]');
+    const ambito = hayConversacionAbierta() ? emergentes : [document];
+    for (const raiz of ambito) {
+      for (const nodo of raiz.querySelectorAll('div, span, h1, h2, h3, p, button')) {
+        if (nodo.children.length > 3) continue;
+        if (esAnuncio((nodo.textContent || '').trim())) esconder(nodo, 'texto');
+      }
     }
+
+    // Lo que se ocultó antes y ya no lleva el anuncio, vuelve. Sin esto, una
+    // equivocación de puntería se queda para toda la sesión: es lo que dejaba
+    // el panel de conversación en blanco.
+    for (const nodo of ocultos) {
+      if (nuevos.has(nodo)) continue;
+      if (!nodo.isConnected) continue;
+      const texto = (nodo.textContent || '').trim();
+      const tieneEnlace = Array.prototype.some.call(
+        nodo.querySelectorAll('a[href]'), (a) => TIENDAS.some((t) => (a.href || '').includes(t))
+      );
+      if (!esAnuncio(texto) && !tieneEnlace) {
+        nodo.style.display = '';
+        anotar('promo: se devuelve <' + nodo.tagName + '>, ya no anuncia nada');
+      } else {
+        nuevos.add(nodo);
+      }
+    }
+    ocultos = nuevos;
   }
+
+  // WhatsApp repinta constantemente; sin este freno el repaso saldría cientos
+  // de veces por cada chat que se abre.
+  let pendiente = 0;
+  const pedirRepaso = () => {
+    if (pendiente) return;
+    pendiente = setTimeout(() => {
+      pendiente = 0;
+      ocultar();
+    }, 150);
+  };
 
   const arrancar = () => {
     ocultar();
     // WhatsApp vuelve a pintar la bienvenida al cambiar de chat, y la
     // emergente aparece cuando le conviene.
-    new MutationObserver(ocultar).observe(document.body, { childList: true, subtree: true });
+    new MutationObserver(pedirRepaso).observe(document.body, { childList: true, subtree: true });
   };
   if (document.body) arrancar();
   else document.addEventListener('DOMContentLoaded', arrancar);

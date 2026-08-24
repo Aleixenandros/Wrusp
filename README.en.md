@@ -151,6 +151,16 @@ cd src-tauri
 cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
+If you touch the script that hides the native app promo (`browser.rs`), also run
+its test bench, which needs a graphical session:
+
+```bash
+cargo run --example banco_promo
+```
+
+That script manipulates WhatsApp's DOM and once left the conversation panel
+blank; the bench checks it against two mock-ups of the real structure.
+
 ## License
 
 [Apache-2.0](LICENSE)

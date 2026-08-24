@@ -4,6 +4,20 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.10] — 2026-08-24
+
+### Corregido
+
+- **Los chats vuelven a abrirse: la 0.3.9 dejaba el panel de conversación en blanco.** Al ocultar el anuncio de «WhatsApp para Mac», el script subía por los elementos que lo envuelven buscando la tarjeta que hay que esconder, y el único freno era su tamaño. Pero ese anuncio vive **dentro del panel de conversación**, y un elemento al que aún no se le ha calculado la posición mide cero, así que pasaba por «pequeño»: el panel entero acababa oculto y ahí se quedaba el resto de la sesión, aunque después pulsaras un chat. Reproducido con una maqueta de la estructura de WhatsApp antes de tocar nada, y verificado después. Que solo pasara en una de las cuentas es cuestión de cuál de las dos llegó a enseñar el anuncio.
+
+  De paso se corrige algo que la 0.3.9 hacía sin que se notara: **los mensajes de la propia conversación que mencionaran «WhatsApp para Mac» —o que llevaran un enlace a la tienda— también desaparecían**. Ahora nada del contenido de los chats se toca nunca, y el anuncio se busca por texto solo donde puede estar: la pantalla sin conversación abierta y las ventanas emergentes.
+
+  Y por si acaso: lo que se oculta se vigila. Si deja de anunciar nada, vuelve a mostrarse. Una equivocación de puntería dura una pasada, no toda la sesión.
+
+### Añadido
+
+- **Banco de pruebas del script del anuncio** (`cargo run --example banco_promo`). Levanta dos maquetas con la estructura de WhatsApp Web y comprueba lo que debe desaparecer y lo que no: el panel, la lista de chats, la caja de escritura y los mensajes siguen vivos; el anuncio y la emergente, no. Con el script de la 0.3.9 canta cinco fallos.
+
 ## [0.3.9] — 2026-08-24
 
 ### Corregido
