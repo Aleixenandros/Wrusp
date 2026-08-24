@@ -359,27 +359,11 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         _ => title.to_string(),
     };
 
-    // Fuera del hilo principal a propósito: `show()` es una llamada D-Bus
-    // síncrona al servidor de notificaciones y se hace desde donde llega la
-    // señal de WebKit, que es el hilo de GTK. Un servidor lento —o ausente—
-    // dejaba la interfaz congelada mientras tanto, y con ella los botones de
-    // minimizar, maximizar y cerrar, que el gestor de ventanas no puede
-    // atender si la aplicación no responde. Nada de esto toca la interfaz, así
-    // que no hay motivo para bloquear el hilo que sí la dibuja.
-    let body = body.to_string();
-    std::thread::spawn(move || {
-        match notify_rust::Notification::new()
-            .summary(&title)
-            .body(&body)
-            .appname("Wrusp")
-            // El icono lo resuelve el escritorio a partir del nombre del .desktop.
-            .icon("Wrusp")
-            .show()
-        {
-            Ok(_) => eprintln!("wrusp: notificación enviada al escritorio"),
-            Err(err) => eprintln!("wrusp: no se pudo mostrar la notificación ({err})"),
-        }
-    });
+    // El módulo conserva una sola conexión D-Bus y atiende su propia cola fuera
+    // del hilo de GTK. Además de no congelar la interfaz si el servidor tarda,
+    // esto es imprescindible en GNOME: liga la fuente del aviso al emisor y la
+    // destruye en cuanto desaparece su nombre D-Bus.
+    crate::notifications::show(title, body.to_string());
 }
 
 /// Registra los no leídos de una cuenta y refresca bandeja, título y barra.

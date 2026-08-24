@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.12] — 2026-08-24
+
+### Corregido
+
+- **Las notificaciones ya aparecen en GNOME.** Wrusp recibía el aviso de WhatsApp y GNOME confirmaba la llamada D-Bus, pero el emisor se desconectaba inmediatamente después. GNOME liga la fuente de notificaciones a esa conexión y la destruía antes de llegar a pintar el banner. Ahora todos los avisos pasan por una única conexión que permanece viva mientras Wrusp está abierto. También se declara explícitamente `Wrusp.desktop`, la categoría de mensajería y el sonido estándar, para que el escritorio aplique el icono y las preferencias correctas de la aplicación.
+
+### Añadido
+
+- **Banco manual de notificaciones** (`cargo run --example banco_notificaciones`). Emite dos avisos consecutivos para comprobar que el escritorio los muestra y que ambos comparten el mismo emisor D-Bus; es exactamente la condición que faltaba en GNOME.
+
 ## [0.3.11] — 2026-08-24
 
 ### Corregido

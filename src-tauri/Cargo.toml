@@ -1,6 +1,6 @@
 [package]
 name = "wrusp"
-version = "0.3.11"
+version = "0.3.12"
 description = "Cliente de escritorio no oficial de WhatsApp para Linux"
 authors = ["aleixenandros"]
 license = "Apache-2.0"
@@ -17,12 +17,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
-# Las notificaciones no salen del plugin de Tauri: ese inyecta su propio
-# `window.Notification` en todas las vistas, y las de WhatsApp no tienen IPC
-# —ni deben tenerlo—, así que la página se quedaba sin permiso y no avisaba de
-# nada. Se emiten desde Rust al recibir la señal nativa de WebKit.
-notify-rust = "4.18.0"
-
 [profile.release]
 strip = true
 lto = true
@@ -42,6 +36,10 @@ webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
 # que usa webkit2gtk: si no coincide, los tipos no son los mismos.
 javascriptcore = { version = "=1.1", package = "javascriptcore-rs" }
 gtk = "0.18"
+# Se usa una única conexión durante toda la ejecución. GNOME liga los avisos al
+# emisor D-Bus y los retira si este desaparece; abrir y cerrar una conexión para
+# cada mensaje hacía que los descartase antes de llegar a mostrarlos.
+zbus = "5.19.0"
 
 # Redirección de stdout/stderr al fichero de registro (ver `logs`).
 [target.'cfg(unix)'.dependencies]

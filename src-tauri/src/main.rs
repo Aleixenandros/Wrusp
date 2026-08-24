@@ -14,6 +14,7 @@ mod config;
 mod filedrop;
 mod icon;
 mod logs;
+mod notifications;
 mod permissions;
 mod rail;
 mod runtime;
@@ -99,8 +100,9 @@ fn main() {
     // `window.Notification` en TODAS las vistas, y como las de WhatsApp no
     // tienen IPC (ni deben tenerlo), la página recibía
     // «notification.request_permission not allowed», se quedaba sin permiso y
-    // no salía ni un aviso. Las notificaciones se envían desde Rust con
-    // `notify-rust` y llegan por la señal nativa de WebKit (ver `permissions`).
+    // no salía ni un aviso. Las notificaciones se envían desde Rust por una
+    // conexión D-Bus persistente y llegan por la señal nativa de WebKit (ver
+    // `permissions` y `notifications`).
     let mut builder = tauri::Builder::<runtime::Runtime>::default()
         // Canal de las vistas hacia Rust. Se atiende como petición de red y no
         // como navegación: las navegaciones se pisan entre sí cuando llegan
