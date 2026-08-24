@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.3.11] — 2026-08-24
+
+### Corregido
+
+- **Abrir un chat con muchos vídeos e imágenes deja de bloquear la aplicación.** El parche que evita la corrupción de MP4 grandes convertía cada vídeo a base64 nada más aparecer, aunque no se reprodujese: varios adjuntos disparaban lecturas completas simultáneas y duplicaban su tamaño en memoria. Ahora cada MP4 se materializa solo al pulsar reproducir, su memoria se libera al salir del chat y los observadores agrupan el trabajo de las miniaturas en lugar de recorrer y medir todo el documento repetidamente.
+
 ## [0.3.10] — 2026-08-24
 
 ### Corregido

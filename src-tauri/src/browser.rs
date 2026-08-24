@@ -176,6 +176,11 @@ pub fn hide_native_app_promo_script() -> String {
   let pendiente = 0;
   const pedirRepaso = () => {
     if (pendiente) return;
+    // Con una conversación abierta no hay anuncio por texto fuera de una
+    // emergente, y los enlaces que haya dentro del chat están expresamente
+    // excluidos. Evita recorrer todo el DOM cada vez que carga una miniatura.
+    if (!ocultos.size && hayConversacionAbierta()
+        && !document.querySelector('[role="dialog"]')) return;
     pendiente = setTimeout(() => {
       pendiente = 0;
       ocultar();
@@ -226,14 +231,20 @@ pub fn hide_webcodecs_script() -> String {
 /// pantalla gris y vídeo que aparece varios segundos tarde.
 ///
 /// La misma secuencia de bytes mediante una URL `data:` no pasa por esa ruta.
-/// Solo se materializan así los blobs MP4 que superan el límite problemático y
-/// que realmente se asignan a un `<video>`; los blobs de descargas, imágenes y
-/// vídeos pequeños conservan el comportamiento nativo. La URL original sigue
-/// devolviéndose sin cambios para no alterar el contrato de `createObjectURL`.
+/// Solo se materializan así los blobs MP4 que superan el límite problemático,
+/// que realmente se asignan a un `<video>` **y cuando ese vídeo va a
+/// reproducirse**. Convertirlos nada más abrir un chat leía y duplicaba en
+/// memoria todos sus vídeos a la vez, aunque el usuario no fuese a verlos.
+///
+/// Los blobs de descargas, imágenes y vídeos pequeños conservan el
+/// comportamiento nativo. La URL original sigue devolviéndose sin cambios para
+/// no alterar el contrato de `createObjectURL`, y las referencias retenidas se
+/// sueltan cuando WhatsApp retira el reproductor del DOM.
 #[cfg(target_os = "linux")]
 pub fn fix_large_mp4_blobs_script() -> String {
     r#"(function () {
   const LIMITE_BUFFER_WEBKIT = 2 * 1024 * 1024;
+  const RETENCION_NODO_NUEVO = 60_000;
   const esMp4 = /^(video\/mp4|video\/quicktime|application\/mp4)(?:$|;)/i;
   const crearUrl = URL.createObjectURL;
   const revocarUrl = URL.revokeObjectURL;
@@ -243,6 +254,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const setAttributeNativo = Element.prototype.setAttribute;
   const reproducirNativo = HTMLMediaElement.prototype.play;
   const reproduccionesPendientes = new WeakMap();
+  const videosVigilados = new WeakSet();
+  let limpiezaPendiente = 0;
 
   function videoDe(nodo) {
     if (nodo instanceof HTMLVideoElement) return nodo;
@@ -296,14 +309,20 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   function reemplazar(original, entrada) {
     if (!entrada.datos) return;
-    for (const nodo of entrada.nodos)
+    for (const nodo of entrada.nodos.keys())
       reemplazarNodo(nodo, original, entrada.datos);
     for (const nodo of document.querySelectorAll('video[src], source[src]')) {
       if (urlActual(nodo) === original || nodo.getAttribute('src') === original) {
-        entrada.nodos.add(nodo);
+        entrada.nodos.set(nodo, true);
         reemplazarNodo(nodo, original, entrada.datos);
       }
     }
+  }
+
+  function terminar(entrada) {
+    const resolver = entrada.terminar;
+    entrada.terminar = null;
+    if (resolver) resolver();
   }
 
   function convertir(original, entrada) {
@@ -317,31 +336,105 @@ pub fn fix_large_mp4_blobs_script() -> String {
         entrada.datos = lector.result;
         reemplazar(original, entrada);
       }
-      entrada.terminar();
+      terminar(entrada);
       if (entrada.revocada) {
         revocarUrl.call(URL, original);
-        setTimeout(() => candidatos.delete(original), 60_000);
+        pedirLimpieza();
       }
     }, { once: true });
     lector.addEventListener('error', () => {
-      entrada.terminar();
+      terminar(entrada);
       candidatos.delete(original);
     }, { once: true });
+    lector.addEventListener('abort', () => terminar(entrada), { once: true });
     lector.readAsDataURL(entrada.blob);
     return entrada.promesa;
   }
 
+  function prepararReproduccion(video, pendiente) {
+    const entrada = candidatos.get(pendiente.original);
+    if (!entrada) {
+      if (reproduccionesPendientes.get(video) === pendiente)
+        reproduccionesPendientes.delete(video);
+      return Promise.resolve();
+    }
+    return convertir(pendiente.original, entrada).then(() => {
+      if (reproduccionesPendientes.get(video) === pendiente)
+        reproduccionesPendientes.delete(video);
+    });
+  }
+
+  // `play()` cubre los controles de WhatsApp. El evento cubre además el
+  // autoplay iniciado por el propio motor, que no tiene por qué pasar por el
+  // método JavaScript sustituido.
+  function vigilarAutoplay(video) {
+    if (videosVigilados.has(video)) return;
+    videosVigilados.add(video);
+    video.addEventListener('play', () => {
+      const pendiente = reproduccionesPendientes.get(video);
+      if (!pendiente) return;
+      video.pause();
+      prepararReproduccion(video, pendiente).then(() => {
+        if (video.isConnected) reproducirNativo.call(video).catch(() => {});
+      });
+    });
+  }
+
   function registrar(nodo, valor) {
-    if (!videoDe(nodo)) return null;
+    const video = videoDe(nodo);
+    if (!video) return null;
     const original = String(valor);
     const entrada = candidatos.get(original);
-    if (!entrada) return null;
-    entrada.nodos.add(nodo);
+    if (!entrada) {
+      const anterior = reproduccionesPendientes.get(video);
+      if (anterior && anterior.original !== original)
+        reproduccionesPendientes.delete(video);
+      return null;
+    }
+    entrada.nodos.set(nodo, entrada.nodos.get(nodo) || nodo.isConnected);
+    vigilarAutoplay(video);
     if (!entrada.datos) {
-      const pendiente = { original, promesa: convertir(original, entrada) };
-      reproduccionesPendientes.set(videoDe(nodo), pendiente);
+      // Guardar qué hay que convertir cuesta unos bytes. La lectura completa y
+      // la URL base64 se posponen hasta que este vídeo concreto se reproduzca.
+      reproduccionesPendientes.set(video, { original });
     }
     return entrada.datos;
+  }
+
+  function nodoUsa(nodo, original, entrada) {
+    const actual = urlActual(nodo);
+    const atributo = nodo.getAttribute('src') || '';
+    return actual === original || atributo === original
+      || (!!entrada.datos && (actual === entrada.datos || atributo === entrada.datos));
+  }
+
+  function limpiar() {
+    limpiezaPendiente = 0;
+    const ahora = Date.now();
+    for (const [original, entrada] of candidatos) {
+      for (const [nodo, estuvoConectado] of entrada.nodos) {
+        if (nodo.isConnected) {
+          entrada.nodos.set(nodo, true);
+          if (!nodoUsa(nodo, original, entrada)) entrada.nodos.delete(nodo);
+          continue;
+        }
+        // WhatsApp puede fijar src y revocar la URL antes de insertar el
+        // reproductor. Se le da margen solo si aún no llegó a estar en el DOM;
+        // uno que ya salió de un chat se libera inmediatamente.
+        const aunPuedeInsertarse = !estuvoConectado && entrada.revocadaEn
+          && ahora - entrada.revocadaEn < RETENCION_NODO_NUEVO;
+        if (!aunPuedeInsertarse) entrada.nodos.delete(nodo);
+      }
+      if (!entrada.revocada || entrada.nodos.size) continue;
+      if (entrada.lector && entrada.lector.readyState === FileReader.LOADING)
+        entrada.lector.abort();
+      candidatos.delete(original);
+    }
+  }
+
+  function pedirLimpieza() {
+    if (limpiezaPendiente) return;
+    limpiezaPendiente = setTimeout(limpiar, 0);
   }
 
   URL.createObjectURL = function (objeto) {
@@ -353,10 +446,11 @@ pub fn fix_large_mp4_blobs_script() -> String {
         blob: objeto,
         lector: null,
         datos: null,
-        nodos: new Set(),
+        nodos: new Map(),
         promesa: null,
         terminar: null,
         revocada: false,
+        revocadaEn: 0,
       });
     return url;
   };
@@ -366,10 +460,14 @@ pub fn fix_large_mp4_blobs_script() -> String {
     const entrada = candidatos.get(original);
     if (!entrada) return revocarUrl.call(this, url);
     entrada.revocada = true;
-    if (!entrada.lector || entrada.datos) {
-      revocarUrl.call(this, url);
-      setTimeout(() => candidatos.delete(original), 60_000);
-    }
+    entrada.revocadaEn = Date.now();
+    // La referencia directa al Blob permite convertirlo después aunque su URL
+    // ya esté revocada. Se conserva solo mientras algún reproductor la use.
+    revocarUrl.call(this, url);
+    pedirLimpieza();
+    // Evita retener indefinidamente un reproductor construido fuera del DOM
+    // que finalmente no llegue a insertarse.
+    setTimeout(pedirLimpieza, RETENCION_NODO_NUEVO + 1_000);
   };
 
   function envolverSrc(prototipo, descriptor) {
@@ -390,11 +488,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
   HTMLMediaElement.prototype.play = function () {
     const pendiente = reproduccionesPendientes.get(this);
     if (!pendiente) return reproducirNativo.call(this);
-    return pendiente.promesa.then(() => {
-      if (reproduccionesPendientes.get(this) === pendiente)
-        reproduccionesPendientes.delete(this);
-      return reproducirNativo.call(this);
-    });
+    return prepararReproduccion(this, pendiente)
+      .then(() => reproducirNativo.call(this));
   };
 
   Element.prototype.setAttribute = function (nombre, valor) {
@@ -404,11 +499,31 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return setAttributeNativo.call(this, nombre, efectivo);
   };
 
-  const observar = () => {
-    for (const nodo of document.querySelectorAll('video[src], source[src]'))
+  function registrarArbol(raiz) {
+    if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
+    if (raiz.matches('video[src], source[src]'))
+      registrar(raiz, urlActual(raiz) || raiz.getAttribute('src'));
+    for (const nodo of raiz.querySelectorAll('video[src], source[src]'))
       registrar(nodo, urlActual(nodo) || nodo.getAttribute('src'));
-  };
-  new MutationObserver(observar).observe(document, {
+  }
+
+  // Se inspeccionan solo los nodos que cambian. Recorrer el documento entero
+  // en cada mutación añadía trabajo precisamente al abrir chats con muchos
+  // adjuntos.
+  new MutationObserver((mutaciones) => {
+    let necesitaLimpieza = false;
+    for (const mutacion of mutaciones) {
+      if (mutacion.type === 'attributes') {
+        registrar(mutacion.target,
+          urlActual(mutacion.target) || mutacion.target.getAttribute('src'));
+        necesitaLimpieza = true;
+      } else {
+        for (const nodo of mutacion.addedNodes) registrarArbol(nodo);
+        if (mutacion.removedNodes.length) necesitaLimpieza = true;
+      }
+    }
+    if (necesitaLimpieza) pedirLimpieza();
+  }).observe(document, {
     attributes: true,
     attributeFilter: ['src'],
     childList: true,

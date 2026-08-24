@@ -228,14 +228,17 @@ pub fn runtime_script(own: &str) -> String {
       el.style.setProperty('width', 'calc(100vw - ' + w + 'px)', 'important');
     }}
   }}
-  let correccionPendiente = false;
+  let correccionPendiente = 0;
   const programarCorreccion = () => {{
     if (correccionPendiente) return;
-    correccionPendiente = true;
-    requestAnimationFrame(() => {{
-      correccionPendiente = false;
+    // Al abrir un chat, cada miniatura añade varios nodos. Hacer mediciones de
+    // layout en cada frame mientras llegan forzaba repintados continuos; una
+    // sola pasada agrupada mantiene el visor bien colocado sin competir con la
+    // carga de imágenes y vídeos.
+    correccionPendiente = setTimeout(() => {{
+      correccionPendiente = 0;
       try {{ corregirCapas(); }} catch (e) {{ /* mejor sin corrección que sin barra */ }}
-    }});
+    }}, 100);
   }};
   const vigilarCapas = () => {{
     if (!document.body) return;
