@@ -4,6 +4,13 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.2] — 2026-08-27
+
+### Corregido
+
+- **Reproducción de vídeo nativa fluida sin consumo de CPU:** los vídeos vuelven a reproducirse de forma nativa por GStreamer sin conversión a `data:` URL ni retrasos de decodificación en JavaScript, eliminando la pantalla gris con siluetas y la saturación del procesador al pulsar reproducir.
+- **Acción inmediata de los botones de ventana:** retirado el manejador de arrastre a nivel de ventana que capturaba los clics sobre la barra de título en estado desmaximizado; los botones de cerrar, minimizar y maximizar responden al primer clic en cualquier modo.
+
 ## [0.4.1] — 2026-08-27
 
 ### Corregido

@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.2" date="2026-08-27">
+      <description>
+        <p>Restauración de reproducción nativa fluida de vídeos sin pantalla gris ni consumo de CPU, y corrección de interacción de botones de ventana (minimizar/maximizar/cerrar).</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-08-27">
       <description>
         <p>Optimización de rendimiento en chats multimedia (eliminación de picos de CPU y cuelgues), corrección de visualización completa de emojis, solución para arrastrar y soltar ficheros, y mejora de responsividad de la ventana.</p>
