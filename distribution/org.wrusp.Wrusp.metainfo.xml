@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.3" date="2026-08-27">
+      <description>
+        <p>Los vídeos de los chats vuelven a reproducirse: Wrusp reordena los MP4 que WhatsApp entrega con el índice al final, que es lo que dejaba a GStreamer sin poder leerlos. Arrastrar un fichero a un chat vuelve a adjuntarlo, y la barra de título deja de quedarse muerta después de un vídeo que falla.</p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-08-27">
       <description>
         <p>Restauración de reproducción nativa fluida de vídeos sin pantalla gris ni consumo de CPU, y corrección de interacción de botones de ventana (minimizar/maximizar/cerrar).</p>

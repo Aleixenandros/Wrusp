@@ -339,20 +339,44 @@ pub const SCRIPT: &str = r#"(function () {
     return datos;
   };
 
-  // Aceptar un soltado exige llamar a preventDefault, así que eso mismo dice
-  // si al otro lado había alguien escuchando.
+  // Un soltado no dice por sí solo si ha servido de algo: `preventDefault` lo
+  // llama cualquiera que escuche `dragover` —WhatsApp el primero— para que el
+  // navegador no abra el fichero en la vista. Fiarse de eso daba por bueno el
+  // primer destino que se probaba, un `<p>` de un mensaje cualquiera, y ahí se
+  // quedaba sin haber adjuntado nada: en el registro salía «soltado aceptado
+  // en P» y el fichero no llegaba a ninguna parte. Lo que sí se ve es el
+  // efecto: cuando WhatsApp acepta un adjunto abre su previsualizador, con el
+  // botón de enviar.
+  const hayPrevisualizador = () => {
+    // El botón de enviar está siempre en el DOM: lo que cambia es si se ve.
+    // Buscarlo con `querySelector` a secas daba por abierto un previsualizador
+    // que estaba oculto, y con eso Wrusp se negaba a entregar nada.
+    for (const nodo of document.querySelectorAll(
+        '[data-icon="send"], [data-testid="send"], [data-icon="send-light"]')) {
+      const caja = nodo.getBoundingClientRect();
+      // `offsetParent` cubre lo que esté oculto por cualquier ancestro; la
+      // medida cubre lo que va en capas fijas, que no tienen offsetParent.
+      if (nodo.offsetParent !== null || (caja.width > 0 && caja.height > 0)) return true;
+    }
+    return false;
+  };
+
+  const esperarAdjunto = async (ms) => {
+    for (let esperado = 0; esperado < ms; esperado += 100) {
+      await esperar(100);
+      if (hayPrevisualizador()) return true;
+    }
+    return false;
+  };
+
   const soltarEn = async (destino, ficheros) => {
-    let aceptado = false;
     for (const tipo of ['dragenter', 'dragover', 'dragover', 'drop']) {
-      const evento = new DragEvent(tipo, {
+      destino.dispatchEvent(new DragEvent(tipo, {
         bubbles: true, cancelable: true, composed: true, dataTransfer: transporte(ficheros)
-      });
-      destino.dispatchEvent(evento);
-      if (evento.defaultPrevented) aceptado = true;
+      }));
       // WhatsApp decide con estado de React entre un evento y el siguiente.
       await esperar(40);
     }
-    return aceptado;
   };
 
   const pegarEn = (destino, ficheros) => {
@@ -363,11 +387,39 @@ pub const SCRIPT: &str = r#"(function () {
     return evento.defaultPrevented;
   };
 
+  // Respaldo cuando el soltado no cuaja: la misma entrada de fichero que hay
+  // detrás del menú de adjuntar. Es la vía más directa y no depende de dónde
+  // caiga el ratón, pero va la última porque hay que acertar con la entrada.
+  const porEntradaDeFichero = async (ficheros) => {
+    const soloMedios = ficheros.every((f) => /^(image|video)\//.test(f.type));
+    const entradas = [...document.querySelectorAll('input[type="file"]')];
+    const declara = (e) => /image|video/.test((e.getAttribute('accept') || '').toLowerCase());
+    // Primero las que declaren aceptar lo que traemos; después, las demás.
+    const preferidas = entradas.filter((e) => (soloMedios ? declara(e) : !declara(e)));
+    const resto = entradas.filter((e) => !preferidas.includes(e));
+    for (const entrada of [...preferidas, ...resto]) {
+      try {
+        entrada.files = transporte(ficheros).files;
+      } catch (e) {
+        continue; // esa entrada no admite que le pongamos ficheros
+      }
+      entrada.dispatchEvent(new Event('change', { bubbles: true }));
+      if (await esperarAdjunto(1200)) return entrada.getAttribute('accept') || 'sin accept';
+    }
+    return null;
+  };
+
   // `x` negativa = viene del portapapeles y no hay punto donde soltarlo.
   window.__wruspEntregar = async function (x, y) {
     const ficheros = listos.splice(0, listos.length);
     if (!ficheros.length) return;
     const nombres = ficheros.map((f) => f.name).join(', ');
+    // Con el previsualizador ya abierto no hay forma de distinguir si lo que
+    // se ve es de este adjunto o del anterior, así que no se toca nada.
+    if (hayPrevisualizador()) {
+      anotar('hay un adjunto a medias sin enviar: no se entrega ' + nombres);
+      return;
+    }
     // Un evento solo lo ven el destino y sus padres, así que se prueba donde
     // más sentido tiene: el punto del soltado o el foco (la caja del chat), y
     // si no, el centro de la vista, que cae dentro del panel de conversación.
@@ -382,17 +434,23 @@ pub const SCRIPT: &str = r#"(function () {
     // de una captura; si nadie lo recoge, se intenta como soltado.
     if (x < 0) {
       for (const destino of destinos) {
-        if (pegarEn(destino, ficheros)) {
+        if (pegarEn(destino, ficheros) && await esperarAdjunto(1200)) {
           anotar('pegado aceptado (' + nombres + ')');
           return;
         }
       }
     }
     for (const destino of destinos) {
-      if (await soltarEn(destino, ficheros)) {
+      await soltarEn(destino, ficheros);
+      if (await esperarAdjunto(1200)) {
         anotar('soltado aceptado en ' + (destino.tagName || '?') + ' (' + nombres + ')');
         return;
       }
+    }
+    const entrada = await porEntradaDeFichero(ficheros);
+    if (entrada) {
+      anotar('adjuntado por la entrada de fichero [' + entrada + '] (' + nombres + ')');
+      return;
     }
     anotar('nadie aceptó ' + ficheros.length + ' fichero(s): ' + nombres +
            ' · destinos=' + destinos.map((d) => d.tagName || '?').join('/') +

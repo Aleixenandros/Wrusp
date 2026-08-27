@@ -171,6 +171,7 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
             &format!("<script>{}</script>", script())
         )
     );
+    let sin_respuesta = fallos.clone();
     let ventana = gtk::Window::new(gtk::WindowType::Toplevel);
     ventana.set_default_size(1100, 700);
     let vista = WebView::new();
@@ -197,8 +198,11 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
     });
     vista.load_html(&pagina, Some("http://localhost/"));
 
-    gtk::glib::timeout_add_seconds_local(15, || {
-        println!("   (tiempo agotado)");
+    gtk::glib::timeout_add_seconds_local(15, move || {
+        // Que la maqueta no conteste es un fallo como cualquier otro: casi
+        // siempre significa que el script lanzó y no llegó a informar.
+        println!("   FALLO (tiempo agotado: la maqueta no llegó a informar)");
+        sin_respuesta.set(sin_respuesta.get() + 1);
         gtk::main_quit();
         gtk::glib::ControlFlow::Break
     });

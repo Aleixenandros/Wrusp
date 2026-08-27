@@ -4,6 +4,23 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.3] — 2026-08-27
+
+### Corregido
+
+- **Los vídeos de los chats vuelven a reproducirse.** La 0.4.2 quitó el parche que los sostenía y no puso nada en su lugar: en el registro real quedaron siete vídeos muertos con `atom has bogus size 720732826` y «Este archivo no es válido y no se puede reproducir». WhatsApp entrega muchos MP4 con su índice al final del fichero, y WebKitGTK sirve los `blob:` por un búfer pequeño: cuando el demuxer va a buscar ese índice, recibe datos de otra posición y se rinde. Wrusp ataca ahora la causa en vez de rodearla: al pulsar reproducir, reordena el MP4 poniendo el índice delante y corrigiendo los desplazamientos de cada trozo. Es el mismo vídeo, byte a byte, solo que ordenado —verificado contra `ffmpeg`: los hashes de fotograma coinciden con el original—, y reordenar uno de 9,6 MiB cuesta 4,5 ms. Si el vídeo ya venía bien, no se toca y no cuesta nada: antes de leer un solo byte se miran solo las cabeceras.
+
+  Se recupera además la precarga perezosa que la 0.4.2 también se llevó: WebKitGTK levanta un pipeline de GStreamer por cada vídeo o nota de voz que haya en el chat, aunque nadie los toque. Medido en banco propio con dos docenas de adjuntos: sin esto, dos vídeos quedaban rotos sin que nadie los abriera.
+
+- **La ventana deja de quedarse muerta después de un vídeo que falla.** Los botones de minimizar, maximizar y cerrar los dibuja GTK dentro del propio proceso, así que si no responden es que la aplicación está ocupada. Lo estaba: un MP4 corrupto dejaba a `avdec_aac` reintentando, y con él **2127 líneas de error en un solo segundo** —medidas en el registro— que había que escribir al disco desde el hilo que dibuja la ventana. Tres cambios: el fallo de un vídeo corta su reproductor en vez de dejarlo reintentando, GStreamer va callado por defecto (`GST_DEBUG=2` desde consola para diagnosticar) y el registro ya no se escribe desde ese hilo, sino por una tubería que vacía un hilo aparte.
+
+- **Arrastrar un fichero a un chat vuelve a adjuntarlo.** El transporte funcionaba —el registro decía «soltado aceptado en P»— pero no adjuntaba nada: se daba por bueno el primer elemento que llamase a `preventDefault`, y eso lo hace WhatsApp en toda la ventana para que el navegador no abra el fichero encima de la conversación. Ahora se comprueba el efecto, no la cortesía: si tras el soltado no aparece el previsualizador con el botón de enviar, se prueba el siguiente destino y, al final, la misma entrada de fichero que hay detrás del menú de adjuntar. Las imágenes y los vídeos van por la entrada de medios y el resto por la de documentos.
+
+### Añadido
+
+- **Banco de pruebas de la reordenación de vídeos** (`cargo run --example banco_faststart`). Comprueba byte a byte que cada trozo del fichero reordenado apunta a los mismos datos que antes —`stco` y `co64`—, que lo que no hay que tocar no se toca, y con `ffmpeg` a mano reproduce de verdad un H.264/AAC con el índice al final y un chat con dos docenas de adjuntos.
+- **Banco de pruebas de la entrega de ficheros** (`cargo run --example banco_soltar`). Imita a quien corta el evento sin adjuntar nada, que es lo que despistaba a Wrusp, y comprueba que el fichero acaba puesto y por la entrada que le toca. Con el script de la 0.4.2 canta el fallo con el mismo mensaje que salía en el registro real.
+
 ## [0.4.2] — 2026-08-27
 
 ### Corregido

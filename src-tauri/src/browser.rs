@@ -219,9 +219,442 @@ pub fn hide_webcodecs_script() -> String {
         .to_string()
 }
 
-/// WebKitGTK y GStreamer gestionan la reproducción nativa de blobs de vídeo/audio.
+/// Deja reproducibles los vídeos que WhatsApp sirve como `blob:`.
+///
+/// WebKitGTK 2.52 entrega los blobs al demuxer a través de un búfer circular
+/// pequeño. Cuando el MP4 es mayor que ese búfer y trae su índice (`moov`) al
+/// final —la forma habitual en que WhatsApp entrega los vídeos—, `qtdemux`
+/// pide el índice, recibe datos de otra posición y muere: en el registro real
+/// aparece `atom has bogus size 720732826` seguido de «Este archivo no es
+/// válido y no se puede reproducir». Detrás quedan miles de errores por
+/// segundo de `avdec_aac` y `h264parse` intentando decodificar basura, que es
+/// lo que dejaba la ventana entera sin responder.
+///
+/// La 0.3.8 lo rodeaba convirtiendo el blob a `data:` URL, con su coste de
+/// memoria y de CPU; la 0.4.2 lo retiró y el vídeo volvió a romperse. Wrusp
+/// ataca ahora la causa: al reproducir, reordena el MP4 poniendo `moov`
+/// delante de `mdat` y corrige los desplazamientos de trozo (`stco`/`co64`).
+/// Con el índice al principio el demuxer no necesita ir al final y el búfer
+/// deja de importar. El fichero resultante es el mismo vídeo, byte a byte,
+/// solo que ordenado: verificado contra `ffmpeg` (los hashes de fotograma
+/// coinciden) y contra GStreamer. Un MP4 de 9,6 MiB se reordena en 4,5 ms.
+///
+/// Antes de leer nada se recorren solo las cabeceras de nivel superior, de 16
+/// bytes: si el vídeo ya venía con `moov` delante —o está fragmentado, o no se
+/// entiende— no se toca y no cuesta nada.
+///
+/// Banco propio, obligatorio antes de tocar esto:
+/// `cargo run --example banco_faststart`.
 pub fn fix_large_mp4_blobs_script() -> String {
-    String::new()
+    r#"(function () {
+  // ── Remux «faststart» ────────────────────────────────────────────────────
+  // Mueve el átomo `moov` delante de `mdat` y corrige los desplazamientos de
+  // trozo. Con el índice al principio, el demuxer no necesita ir al final del
+  // fichero y el búfer circular de WebKit deja de entregar datos de la
+  // posición equivocada. Verificado en `cargo run --example banco_faststart`.
+
+  const CONTENEDORES = new Set([
+    'moov', 'trak', 'mdia', 'minf', 'stbl', 'edts', 'udta', 'mvex',
+  ]);
+
+  function tipoEn(u8, pos) {
+    return String.fromCharCode(u8[pos], u8[pos + 1], u8[pos + 2], u8[pos + 3]);
+  }
+
+  // Cajas de un tramo, o null si algo no cuadra: ante la duda no se toca nada.
+  function cajas(u8, inicio, fin) {
+    const vista = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const lista = [];
+    let pos = inicio;
+    while (pos + 8 <= fin) {
+      let tam = vista.getUint32(pos);
+      const tipo = tipoEn(u8, pos + 4);
+      let cabecera = 8;
+      if (tam === 1) {
+        if (pos + 16 > fin) return null;
+        const grande = vista.getBigUint64(pos + 8);
+        if (grande > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+        tam = Number(grande);
+        cabecera = 16;
+      } else if (tam === 0) {
+        tam = fin - pos;
+      }
+      if (tam < cabecera || pos + tam > fin) return null;
+      lista.push({ tipo, inicio: pos, tam, cabecera });
+      pos += tam;
+    }
+    return pos === fin ? lista : null;
+  }
+
+  // Tablas de desplazamientos que cuelgan de `moov`.
+  function tablas(u8, inicio, fin, salida) {
+    const lista = cajas(u8, inicio, fin);
+    if (!lista) return false;
+    const vista = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    for (const c of lista) {
+      if (c.tipo === 'stco' || c.tipo === 'co64') {
+        const base = c.inicio + c.cabecera;
+        if (base + 8 > c.inicio + c.tam) return false;
+        const cuantos = vista.getUint32(base + 4);
+        const ancho = c.tipo === 'stco' ? 4 : 8;
+        if (base + 8 + cuantos * ancho > c.inicio + c.tam) return false;
+        salida.push({ base: base + 8, cuantos, ancho });
+      } else if (CONTENEDORES.has(c.tipo)) {
+        if (!tablas(u8, c.inicio + c.cabecera, c.inicio + c.tam, salida)) return false;
+      }
+    }
+    return true;
+  }
+
+  // ArrayBuffer con `moov` delante, o null si no hace falta o no se entiende.
+  function reordenar(buffer) {
+    const u8 = new Uint8Array(buffer);
+    const nivel = cajas(u8, 0, u8.length);
+    if (!nivel) return null;
+    // Fragmentado: los desplazamientos viven en `trun`, con otra base.
+    if (nivel.some((c) => c.tipo === 'moof' || c.tipo === 'sidx')) return null;
+
+    const moov = nivel.find((c) => c.tipo === 'moov');
+    const primerDato = nivel.find((c) => c.tipo === 'mdat');
+    if (!moov || !primerDato || moov.inicio < primerDato.inicio) return null;
+
+    const tabla = [];
+    if (!tablas(u8, moov.inicio + moov.cabecera, moov.inicio + moov.tam, tabla)) return null;
+
+    const ftyp = nivel.find((c) => c.tipo === 'ftyp');
+    const orden = [];
+    if (ftyp) orden.push(ftyp);
+    orden.push(moov);
+    for (const c of nivel) if (c !== ftyp && c !== moov) orden.push(c);
+
+    let cursor = 0;
+    const mapa = orden.map((caja) => {
+      const entrada = { caja, nuevoInicio: cursor };
+      cursor += caja.tam;
+      return entrada;
+    });
+
+    const reubicar = (o) => {
+      for (const { caja, nuevoInicio } of mapa)
+        if (o >= caja.inicio && o < caja.inicio + caja.tam)
+          return o - caja.inicio + nuevoInicio;
+      return -1; // apunta fuera de toda caja: no nos metemos
+    };
+
+    const nuevo = new Uint8Array(cursor);
+    for (const { caja, nuevoInicio } of mapa)
+      nuevo.set(u8.subarray(caja.inicio, caja.inicio + caja.tam), nuevoInicio);
+
+    const destinoMoov = mapa.find((e) => e.caja === moov).nuevoInicio;
+    const vista = new DataView(nuevo.buffer);
+    for (const t of tabla) {
+      const base = t.base - moov.inicio + destinoMoov;
+      for (let i = 0; i < t.cuantos; i++) {
+        const pos = base + i * t.ancho;
+        const viejo = t.ancho === 4
+          ? vista.getUint32(pos)
+          : Number(vista.getBigUint64(pos));
+        const destino = reubicar(viejo);
+        if (destino < 0) return null;
+        if (t.ancho === 4) {
+          if (destino > 0xffffffff) return null;
+          vista.setUint32(pos, destino);
+        } else {
+          vista.setBigUint64(pos, BigInt(destino));
+        }
+      }
+    }
+    return nuevo.buffer;
+  }
+
+  // ── Sondeo barato ────────────────────────────────────────────────────────
+  // Leer el vídeo entero para descubrir que ya estaba bien sale caro, así que
+  // primero se recorren solo las cabeceras de nivel superior, de 16 bytes.
+
+  const MAX_CAJAS = 64;
+
+  async function hayQueReordenar(blob) {
+    let pos = 0;
+    let vistosDatos = false;
+    for (let i = 0; i < MAX_CAJAS && pos + 8 <= blob.size; i++) {
+      const cabecera = new DataView(await blob.slice(pos, pos + 16).arrayBuffer());
+      if (cabecera.byteLength < 8) return false;
+      let tam = cabecera.getUint32(0);
+      const tipo = String.fromCharCode(
+        cabecera.getUint8(4), cabecera.getUint8(5),
+        cabecera.getUint8(6), cabecera.getUint8(7));
+      if (tam === 1) {
+        if (cabecera.byteLength < 16) return false;
+        const grande = cabecera.getBigUint64(8);
+        if (grande > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+        tam = Number(grande);
+      } else if (tam === 0) {
+        tam = blob.size - pos;
+      }
+      if (tam < 8) return false;
+      if (tipo === 'moof' || tipo === 'sidx') return false; // fragmentado
+      if (tipo === 'mdat') vistosDatos = true;
+      if (tipo === 'moov') return vistosDatos;
+      pos += tam;
+    }
+    return false;
+  }
+
+  // ── Puente con la página ─────────────────────────────────────────────────
+
+  const esMedio = /^(video\/|audio\/|application\/mp4|application\/octet-stream)/i;
+  const crearUrl = URL.createObjectURL;
+  const revocarUrl = URL.revokeObjectURL;
+  const reproducirNativo = HTMLMediaElement.prototype.play;
+  const descriptorMedio = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+  const descriptorFuente = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
+  const descriptorPrecarga = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');
+  const ponerAtributo = Element.prototype.setAttribute;
+
+  const candidatos = new Map();   // url del blob → { blob, arreglada, trabajo }
+  const fallidas = new Set();     // urls que ya reventaron: no se reintentan
+  const vigilados = new WeakSet();
+  const enObras = new WeakSet();  // medios a la espera de su fuente reordenada
+
+  const anotar = (texto) => {
+    if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
+  };
+
+  function medioDe(nodo) {
+    if (nodo instanceof HTMLMediaElement) return nodo;
+    if (nodo instanceof HTMLSourceElement && nodo.parentElement instanceof HTMLMediaElement)
+      return nodo.parentElement;
+    return null;
+  }
+
+  function urlDe(nodo) {
+    if (nodo instanceof HTMLMediaElement && descriptorMedio && descriptorMedio.get)
+      return descriptorMedio.get.call(nodo);
+    if (nodo instanceof HTMLSourceElement && descriptorFuente && descriptorFuente.get)
+      return descriptorFuente.get.call(nodo);
+    return nodo.getAttribute('src') || '';
+  }
+
+  function ponerUrl(nodo, url) {
+    if (nodo instanceof HTMLMediaElement && descriptorMedio && descriptorMedio.set)
+      descriptorMedio.set.call(nodo, url);
+    else if (nodo instanceof HTMLSourceElement && descriptorFuente && descriptorFuente.set)
+      descriptorFuente.set.call(nodo, url);
+    else
+      ponerAtributo.call(nodo, 'src', url);
+  }
+
+  // WebKitGTK levanta un pipeline de GStreamer por cada medio del documento
+  // aunque nadie lo reproduzca: un chat con decenas de vídeos y notas de voz
+  // llegaba a saturar la CPU. La precarga se devuelve al reproducir.
+  function aplazarPrecarga(medio) {
+    if (!descriptorPrecarga || !descriptorPrecarga.set || !descriptorPrecarga.get) return;
+    if (medio.autoplay || !medio.paused) return;
+    if (descriptorPrecarga.get.call(medio) !== 'none')
+      descriptorPrecarga.set.call(medio, 'none');
+  }
+
+  // Un fallo de decodificación deja al motor y a WhatsApp reintentando, y cada
+  // intento vuelve a llenar el registro con miles de errores por segundo: eso
+  // es lo que dejaba la ventana sin responder. Se corta en el primer fallo.
+  function vigilarFallo(medio) {
+    if (vigilados.has(medio)) return;
+    vigilados.add(medio);
+    medio.addEventListener('error', () => {
+      // Mientras se reordena, el elemento aún lleva la fuente vieja: un fallo
+      // aquí lo arregla el cambio de fuente que viene detrás.
+      if (enObras.has(medio)) return;
+      const codigo = medio.error ? medio.error.code : 0;
+      const url = String(urlDe(medio) || '');
+      // Desmontar el pipeline borra `error`, y sin este rastro no hay forma de
+      // saber después qué pasó (el banco lo lee de aquí).
+      window.__wruspUltimoFallo = { codigo, url };
+      if (url) fallidas.add(url);
+      try {
+        medio.pause();
+        medio.removeAttribute('src');
+        medio.load(); // desmonta el pipeline; sin esto el bucle sigue
+      } catch (e) { /* el medio ya no está */ }
+      anotar('medio con fallo de decodificación (código ' + codigo + '): pipeline detenido');
+    }, true);
+  }
+
+  // Antes de que la fuente llegue al elemento: si es uno de nuestros blobs,
+  // se aplaza su precarga para que el motor no arranque nada todavía.
+  function prepararNodo(nodo, valor) {
+    if (!candidatos.has(String(valor))) return;
+    const medio = medioDe(nodo);
+    if (medio) aplazarPrecarga(medio);
+  }
+
+  function registrar(nodo) {
+    const medio = medioDe(nodo);
+    if (!medio) return;
+    vigilarFallo(medio);
+    const url = String(urlDe(nodo) || '');
+    if (candidatos.has(url)) aplazarPrecarga(medio);
+  }
+
+  // Deja lista la URL definitiva del blob: la arreglada si hacía falta
+  // reordenar, o la original. Se hace una sola vez por blob.
+  function preparar(url) {
+    const entrada = candidatos.get(url);
+    if (!entrada) return Promise.resolve(url);
+    if (entrada.arreglada) return Promise.resolve(entrada.arreglada);
+    if (entrada.trabajo) return entrada.trabajo;
+    entrada.trabajo = (async () => {
+      try {
+        if (!(await hayQueReordenar(entrada.blob))) return url;
+        const bytes = await entrada.blob.arrayBuffer();
+        const arreglado = reordenar(bytes);
+        if (!arreglado) {
+          anotar('vídeo con el índice al final que no se ha podido reordenar');
+          return url;
+        }
+        const tipo = entrada.blob.type || 'video/mp4';
+        entrada.arreglada = crearUrl.call(URL, new Blob([arreglado], { type: tipo }));
+        anotar('vídeo reordenado (' + Math.round(arreglado.byteLength / 1024) + ' KiB)');
+        return entrada.arreglada;
+      } catch (e) {
+        return url; // ante cualquier sorpresa, el blob original
+      }
+    })();
+    return entrada.trabajo;
+  }
+
+  // Sustituye la fuente conservando posición y estado, como haría una recarga
+  // normal del propio medio.
+  function usar(medio, nodo, urlNueva) {
+    if (urlDe(nodo) === urlNueva) return Promise.resolve();
+    const posicion = Number.isFinite(medio.currentTime) ? medio.currentTime : 0;
+    if (descriptorPrecarga && descriptorPrecarga.set)
+      descriptorPrecarga.set.call(medio, 'auto');
+    ponerUrl(nodo, urlNueva);
+    medio.load();
+    if (posicion <= 0) return Promise.resolve();
+    return new Promise((listo) => {
+      const colocar = () => {
+        try {
+          if (Number.isFinite(medio.duration))
+            medio.currentTime = Math.min(posicion, Math.max(0, medio.duration - 0.001));
+        } catch (e) { /* el medio cambió por debajo */ }
+        listo();
+      };
+      if (medio.readyState >= HTMLMediaElement.HAVE_METADATA) colocar();
+      else medio.addEventListener('loadedmetadata', colocar, { once: true });
+    });
+  }
+
+  // El nodo que lleva la URL puede ser el propio medio o un <source> suyo.
+  function portador(medio) {
+    if (candidatos.has(String(urlDe(medio) || ''))) return medio;
+    for (const fuente of medio.querySelectorAll('source[src]'))
+      if (candidatos.has(String(urlDe(fuente) || ''))) return fuente;
+    return null;
+  }
+
+  HTMLMediaElement.prototype.play = function () {
+    const medio = this;
+    vigilarFallo(medio);
+    if (descriptorPrecarga && descriptorPrecarga.set)
+      descriptorPrecarga.set.call(medio, 'auto');
+    const nodo = portador(medio);
+    if (!nodo) {
+      if (fallidas.has(String(urlDe(medio) || '')))
+        return Promise.reject(new DOMException('medio descartado tras fallar', 'AbortError'));
+      return reproducirNativo.call(medio);
+    }
+    const url = String(urlDe(nodo));
+    enObras.add(medio);
+    return preparar(url)
+      .then((definitiva) => usar(medio, nodo, definitiva))
+      .then(() => { enObras.delete(medio); return reproducirNativo.call(medio); })
+      .catch((e) => { enObras.delete(medio); throw e; });
+  };
+
+  // Un `autoplay` no pasa por `play()`: el motor arranca solo. Se detiene, se
+  // prepara la fuente y se vuelve a arrancar.
+  document.addEventListener('play', function (evento) {
+    const medio = evento.target;
+    if (!(medio instanceof HTMLMediaElement)) return;
+    const nodo = portador(medio);
+    if (!nodo) return;
+    const url = String(urlDe(nodo));
+    const entrada = candidatos.get(url);
+    if (!entrada || entrada.arreglada) return;
+    medio.pause();
+    enObras.add(medio);
+    preparar(url)
+      .then((definitiva) => usar(medio, nodo, definitiva))
+      .then(() => {
+        enObras.delete(medio);
+        if (medio.isConnected) reproducirNativo.call(medio).catch(() => {});
+      })
+      .catch(() => enObras.delete(medio));
+  }, true);
+
+  URL.createObjectURL = function (objeto) {
+    const url = crearUrl.call(this, objeto);
+    if (objeto instanceof Blob && (objeto.type ? esMedio.test(objeto.type) : true))
+      candidatos.set(url, { blob: objeto, arreglada: null, trabajo: null });
+    return url;
+  };
+
+  URL.revokeObjectURL = function (url) {
+    const clave = String(url);
+    const entrada = candidatos.get(clave);
+    if (entrada) {
+      // La copia reordenada solo la conoce Wrusp: si nadie revoca la original,
+      // nadie la revocaría nunca.
+      if (entrada.arreglada) revocarUrl.call(this, entrada.arreglada);
+      candidatos.delete(clave);
+      fallidas.delete(clave);
+    }
+    return revocarUrl.call(this, url);
+  };
+
+  // Tres vías para poner la fuente, y hay que estar en las tres: el hueco de
+  // `setAttribute` dejaba pasar vídeos sin aplazar su precarga.
+  function envolverSrc(prototipo, descriptor) {
+    if (!descriptor || !descriptor.get || !descriptor.set || !descriptor.configurable) return;
+    Object.defineProperty(prototipo, 'src', {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get: descriptor.get,
+      set(valor) {
+        // El orden importa: asignar la fuente arranca la carga en el acto, y
+        // aplazar la precarga después ya no la cancela.
+        prepararNodo(this, valor);
+        descriptor.set.call(this, valor);
+        registrar(this);
+      },
+    });
+  }
+  envolverSrc(HTMLMediaElement.prototype, descriptorMedio);
+  envolverSrc(HTMLSourceElement.prototype, descriptorFuente);
+
+  Element.prototype.setAttribute = function (nombre, valor) {
+    const esFuente = String(nombre).toLowerCase() === 'src'
+      && (this instanceof HTMLMediaElement || this instanceof HTMLSourceElement);
+    if (esFuente) prepararNodo(this, valor);
+    ponerAtributo.call(this, nombre, valor);
+    if (esFuente) registrar(this);
+  };
+
+  // Y los que llegan al documento con la fuente ya puesta.
+  function registrarArbol(raiz) {
+    if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
+    if (raiz.matches('video[src], audio[src], source[src]')) registrar(raiz);
+    for (const nodo of raiz.querySelectorAll('video[src], audio[src], source[src]'))
+      registrar(nodo);
+  }
+
+  new MutationObserver((mutaciones) => {
+    for (const mutacion of mutaciones)
+      for (const nodo of mutacion.addedNodes) registrarArbol(nodo);
+  }).observe(document, { childList: true, subtree: true });
+})();"#
+        .to_string()
 }
 
 /// Completa el disfraz de Chrome que el user-agent empieza.
