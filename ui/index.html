@@ -41,6 +41,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></svg>
           <span>Atajos</span>
         </button>
+        <button type="button" role="tab" data-panel="diagnostico">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          <span>Diagnóstico</span>
+        </button>
         <button type="button" role="tab" data-panel="acerca">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.8v.01"/></svg>
           <span>Acerca de</span>
@@ -67,8 +71,7 @@
           </form>
           <p class="hint">
             Cada cuenta mantiene su propia sesión de WhatsApp Web, aislada del
-            resto. La primera vez tendrás que escanear el código QR desde el
-            móvil. Se cambia de cuenta desde la barra lateral.
+            resto. Puedes elegir un color distintivo o silenciar avisos por cuenta.
           </p>
         </section>
 
@@ -141,9 +144,16 @@
             <input data-toggle="notifications" type="checkbox" />
             <span>Avisar de mensajes nuevos con una notificación</span>
           </label>
+          <label class="toggle">
+            <input data-toggle="notificationPrivacy" type="checkbox" />
+            <span>Ocultar contenido en notificaciones (modo privado)</span>
+          </label>
+          <label class="toggle">
+            <input data-toggle="autostart" type="checkbox" />
+            <span>Iniciar automáticamente al encender el equipo</span>
+          </label>
           <p class="hint">
-            Las notificaciones salen del propio aviso de WhatsApp, con el
-            remitente y el mensaje. No se avisa de la cuenta que tienes delante.
+            Las notificaciones salen del aviso de WhatsApp. Al hacer clic en un aviso, Wrusp se enfocará abriendo la cuenta correspondiente.
           </p>
         </section>
 
@@ -151,7 +161,8 @@
         <section class="panel shortcuts" id="panel-atajos" role="tabpanel" hidden>
           <h2>Atajos de teclado</h2>
           <ul class="keys">
-            <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd><span>Cambiar de cuenta</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd><span>Cambiar a cuenta específica</span></li>
+            <li><kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd><span>Cuenta siguiente / anterior</span></li>
             <li><kbd>Ctrl</kbd>+<kbd>P</kbd><span>Ajustes</span></li>
             <li><kbd>Ctrl</kbd>+<kbd>U</kbd><span>Añadir cuenta</span></li>
             <li><kbd>Ctrl</kbd>+<kbd>W</kbd><span>Ocultar en la bandeja</span></li>
@@ -159,6 +170,46 @@
             <li><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd> / <kbd>0</kbd><span>Zoom (se recuerda por cuenta)</span></li>
             <li><kbd>F5</kbd><span>Recargar la vista</span></li>
           </ul>
+        </section>
+
+        <!-- ── Diagnóstico ─────────────────────────────── -->
+        <section class="panel diagnostics" id="panel-diagnostico" role="tabpanel" hidden>
+          <h2>Diagnóstico del sistema</h2>
+          <div class="diag-grid">
+            <div class="diag-card">
+              <div class="diag-title">Vídeo H.264 (GStreamer)</div>
+              <div class="diag-status" id="diag-h264">Comprobando…</div>
+              <p class="hint" id="diag-h264-detail"></p>
+            </div>
+            <div class="diag-card">
+              <div class="diag-title">Audio AAC (GStreamer)</div>
+              <div class="diag-status" id="diag-aac">Comprobando…</div>
+            </div>
+            <div class="diag-card">
+              <div class="diag-title">Motor WebKitGTK</div>
+              <div class="diag-value" id="diag-webkit">…</div>
+            </div>
+            <div class="diag-card">
+              <div class="diag-title">Plataforma y arquitectura</div>
+              <div class="diag-value" id="diag-os">…</div>
+            </div>
+            <div class="diag-card">
+              <div class="diag-title">Espacio en perfiles (sesiones)</div>
+              <div class="diag-value" id="diag-profiles">…</div>
+            </div>
+            <div class="diag-card">
+              <div class="diag-title">Tamaño de registros</div>
+              <div class="diag-value" id="diag-logs">…</div>
+            </div>
+          </div>
+          <div class="diag-actions">
+            <button type="button" id="refresh-diagnostics">Actualizar</button>
+            <button type="button" id="clear-gst-cache">Limpiar caché de GStreamer</button>
+            <span id="diag-action-status" class="hint"></span>
+          </div>
+          <p class="hint">
+            Si los vídeos no se reproducen tras instalar códecs en tu distribución, pulsa «Limpiar caché de GStreamer» y reinicia Wrusp con «Salir» desde la bandeja.
+          </p>
         </section>
 
         <!-- ── Acerca de ───────────────────────────────── -->

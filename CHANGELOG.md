@@ -4,6 +4,26 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.0] — 2026-08-27
+
+### Añadido
+
+- **Personalización y gestión de cuentas:**
+  - Selector de color de acento por cuenta, visible en la barra lateral y en la lista de ajustes.
+  - Silenciado individual de notificaciones por cuenta con indicador visual.
+  - Reordenación en caliente de cuentas (botones subir/bajar en ajustes).
+  - Nuevos atajos de teclado para rotación rápida entre cuentas: `Ctrl+Tab` / `Ctrl+Shift+Tab` y `Ctrl+PageDown` / `Ctrl+PageUp`.
+- **Notificaciones interactivas y privacidad:**
+  - Al hacer clic sobre una notificación de escritorio, Wrusp se enfoca y abre directamente la cuenta receptora del mensaje.
+  - Modo privado de notificaciones opcional para ocultar el contenido de los mensajes en los avisos del sistema.
+- **Diagnóstico del sistema y multimedia:**
+  - Nuevo panel de diagnóstico en ajustes con verificación en vivo de códecs GStreamer (H.264 / AAC), motor WebKitGTK y uso de disco.
+  - Botón para purgar la caché de plugins de GStreamer.
+- **Integración con el sistema y distribución:**
+  - Opción de inicio automático al encender el equipo (`~/.config/autostart/wrusp.desktop`) con soporte de argumento `--hidden`.
+  - Selector de directorios mejorado con cascada `zenity` → `kdialog` → `qarma`.
+  - Manifiesto Flatpak (`distribution/flatpak/org.wrusp.Wrusp.yaml`) y metadatos AppStream.
+
 ## [0.3.12] — 2026-08-24
 
 ### Corregido

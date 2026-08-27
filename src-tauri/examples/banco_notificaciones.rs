@@ -16,11 +16,13 @@ use std::{thread, time::Duration};
 
 fn main() {
     notifications::show(
+        "test".into(),
         "Prueba Wrusp 1".into(),
         "La conexión D-Bus sigue viva".into(),
     );
     thread::sleep(Duration::from_secs(1));
     notifications::show(
+        "test".into(),
         "Prueba Wrusp 2".into(),
         "Los dos avisos comparten el mismo emisor".into(),
     );

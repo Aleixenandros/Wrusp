@@ -49,6 +49,8 @@ pub fn state_script(
                 "name": acc.name,
                 "initials": initials(&acc.name),
                 "unread": unread.get(&acc.id).copied().unwrap_or(0),
+                "color": acc.color,
+                "muted": acc.muted,
             })
         })
         .collect();
@@ -129,6 +131,10 @@ pub fn runtime_script(own: &str) -> String {
         font-size: 10px; line-height: 17px; font-weight: 700;
         padding: 0 4px; box-sizing: border-box;
       }}
+      .wrusp-muted-dot {{
+        position: absolute; bottom: -1px; right: -1px; width: 8px; height: 8px;
+        border-radius: 50%; background: #8899a6; border: 1.5px solid ${{s.dark ? '#10151a' : '#ededed'}};
+      }}
       .wrusp-sep {{ flex: 1 1 auto; }}
       /* Deja hueco a la barra sin depender del maquetado de WhatsApp: si el
          selector de su raíz cambiara, la barra solo taparía ese margen. */
@@ -138,17 +144,31 @@ pub fn runtime_script(own: &str) -> String {
     `;
   }}
 
-  function button(label, title, onClick, active, badge) {{
+  function button(label, title, onClick, active, badge, color, muted) {{
     const b = document.createElement('button');
     b.className = 'wrusp-btn' + (active ? ' active' : '');
     b.textContent = label;
     b.title = title;
     b.addEventListener('click', onClick);
+    if (color) {{
+      if (active) {{
+        b.style.borderColor = color;
+      }} else {{
+        b.style.color = color;
+      }}
+    }}
     if (badge) {{
       const n = document.createElement('span');
       n.className = 'wrusp-badge';
       n.textContent = badge > 99 ? '99+' : String(badge);
+      if (color) n.style.background = color;
       b.appendChild(n);
+    }}
+    if (muted) {{
+      const m = document.createElement('span');
+      m.className = 'wrusp-muted-dot';
+      m.title = 'Silenciada';
+      b.appendChild(m);
     }}
     return b;
   }}
@@ -167,9 +187,9 @@ pub fn runtime_script(own: &str) -> String {
     rail.replaceChildren();
 
     s.accounts.forEach((acc, i) => {{
-      const title = acc.name + (i < 9 ? '  (Ctrl+' + (i + 1) + ')' : '');
+      const title = acc.name + (acc.muted ? ' (Silenciada)' : '') + (i < 9 ? '  (Ctrl+' + (i + 1) + ')' : '');
       rail.appendChild(
-        button(acc.initials, title, () => go('switch/' + acc.id), acc.id === s.active, acc.unread)
+        button(acc.initials, title, () => go('switch/' + acc.id), acc.id === s.active, acc.unread, acc.color, acc.muted)
       );
     }});
     rail.appendChild(button('+', 'Añadir cuenta  (Ctrl+U)', () => go('add')));
@@ -203,13 +223,6 @@ pub fn runtime_script(own: &str) -> String {
   }}
 
   // ── Capas a pantalla completa ───────────────────────────────
-  // El hueco de la barra se abre con padding en `body` y ajustando `#app`,
-  // pero las capas `position: fixed` se anclan al viewport y lo ignoran: el
-  // visor de fotos quedaba con sus primeros 60 px debajo de la barra. Sus
-  // clases cambian en cada despliegue, así que no hay selector del que fiarse:
-  // se detectan por geometría —capa fija que cubre (casi) todo el viewport
-  // pegada al borde izquierdo— y se les hace el mismo hueco. Los menús y
-  // globos pequeños no pasan el filtro de tamaño y no se tocan.
   function corregirCapas() {{
     const w = st().width;
     const cand = document.querySelectorAll(
@@ -231,10 +244,6 @@ pub fn runtime_script(own: &str) -> String {
   let correccionPendiente = 0;
   const programarCorreccion = () => {{
     if (correccionPendiente) return;
-    // Al abrir un chat, cada miniatura añade varios nodos. Hacer mediciones de
-    // layout en cada frame mientras llegan forzaba repintados continuos; una
-    // sola pasada agrupada mantiene el visor bien colocado sin competir con la
-    // carga de imágenes y vídeos.
     correccionPendiente = setTimeout(() => {{
       correccionPendiente = 0;
       try {{ corregirCapas(); }} catch (e) {{ /* mejor sin corrección que sin barra */ }}
@@ -257,6 +266,22 @@ pub fn runtime_script(own: &str) -> String {
     const ctrl = ev.ctrlKey || ev.metaKey;
     if (ev.key === 'F5') {{ ev.preventDefault(); location.reload(); return; }}
     if (!ctrl) return;
+
+    if (ev.key === 'Tab' || ev.key === 'PageDown' || ev.key === 'PageUp') {{
+      const accs = st().accounts;
+      if (accs.length > 1) {{
+        ev.preventDefault();
+        const currentIdx = accs.findIndex((a) => a.id === st().active);
+        let nextIdx;
+        if (ev.shiftKey || ev.key === 'PageUp') {{
+          nextIdx = currentIdx <= 0 ? accs.length - 1 : currentIdx - 1;
+        }} else {{
+          nextIdx = currentIdx < 0 ? 0 : (currentIdx + 1) % accs.length;
+        }}
+        go('switch/' + accs[nextIdx].id);
+        return;
+      }}
+    }}
 
     if (ev.key >= '1' && ev.key <= '9') {{
       const acc = st().accounts[Number(ev.key) - 1];

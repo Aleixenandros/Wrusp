@@ -137,6 +137,9 @@ fn main() {
             accounts::rename_account,
             accounts::remove_account,
             accounts::open_account,
+            accounts::set_account_color,
+            accounts::set_account_muted,
+            accounts::reorder_accounts,
             theme::get_theme,
             theme::set_theme,
             icon::get_app_icon,
@@ -151,15 +154,33 @@ fn main() {
             config::set_toggle,
             config::get_about,
             config::open_external,
+            config::get_diagnostics,
+            config::clear_gstreamer_cache,
         ])
         .setup(|app| {
             config::debug_assert_identifier(app.handle());
             let cfg = config::load(app.handle());
             app.manage(ConfigState(Mutex::new(cfg)));
+
+            let handle = app.handle().clone();
+            notifications::on_notification_click(move |account_id| {
+                let h = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    shell::focus_window(&h);
+                    let _ = shell::show_account(&h, &account_id);
+                });
+            });
+
             shell::create(app.handle())?;
             theme::apply_theme(app.handle());
             tray::create(app.handle())?;
             icon::apply(app.handle());
+
+            if std::env::args().any(|a| a == "--hidden") {
+                if let Some(w) = app.get_window(shell::MAIN_WINDOW) {
+                    let _ = w.hide();
+                }
+            }
 
             Ok(())
         })

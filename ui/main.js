@@ -279,6 +279,17 @@ async function initAbout() {
 }
 
 // ── Cuentas ─────────────────────────────────────────────
+const ACCOUNT_COLORS = [
+  "",
+  "#1fa855",
+  "#0ea5e9",
+  "#6366f1",
+  "#a855f7",
+  "#ec4899",
+  "#f59e0b",
+  "#ef4444",
+];
+
 function initials(name) {
   return name
     .split(/\s+/)
@@ -288,13 +299,54 @@ function initials(name) {
     .join("");
 }
 
-function accountRow(account) {
+function accountRow(account, index, allAccounts) {
   const li = document.createElement("li");
   li.className = "account";
+
+  const reorderDiv = document.createElement("div");
+  reorderDiv.className = "reorder-btns";
+
+  const upBtn = document.createElement("button");
+  upBtn.type = "button";
+  upBtn.className = "icon-btn reorder-btn";
+  upBtn.title = "Subir";
+  upBtn.disabled = index === 0;
+  upBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 15l-6-6-6 6"/></svg>';
+  upBtn.addEventListener("click", async () => {
+    const newOrder = allAccounts.map((a) => a.id);
+    [newOrder[index - 1], newOrder[index]] = [newOrder[index], newOrder[index - 1]];
+    try {
+      await invoke("reorder_accounts", { ids: newOrder });
+      await refresh();
+    } catch (err) {
+      console.error("reorder_accounts:", err);
+    }
+  });
+
+  const downBtn = document.createElement("button");
+  downBtn.type = "button";
+  downBtn.className = "icon-btn reorder-btn";
+  downBtn.title = "Bajar";
+  downBtn.disabled = index === allAccounts.length - 1;
+  downBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+  downBtn.addEventListener("click", async () => {
+    const newOrder = allAccounts.map((a) => a.id);
+    [newOrder[index + 1], newOrder[index]] = [newOrder[index], newOrder[index + 1]];
+    try {
+      await invoke("reorder_accounts", { ids: newOrder });
+      await refresh();
+    } catch (err) {
+      console.error("reorder_accounts:", err);
+    }
+  });
+  reorderDiv.append(upBtn, downBtn);
 
   const avatar = document.createElement("div");
   avatar.className = "avatar";
   avatar.textContent = initials(account.name) || "?";
+  if (account.color) {
+    avatar.style.backgroundColor = account.color;
+  }
 
   const name = document.createElement("div");
   name.className = "name";
@@ -304,7 +356,42 @@ function accountRow(account) {
   const actions = document.createElement("div");
   actions.className = "actions";
 
+  // Botón para rotar color de acento
+  const colorBtn = document.createElement("button");
+  colorBtn.type = "button";
+  colorBtn.className = "icon-btn color-btn";
+  colorBtn.title = "Cambiar color de acento";
+  colorBtn.style.backgroundColor = account.color || "var(--accent)";
+  colorBtn.addEventListener("click", async () => {
+    const currentIdx = ACCOUNT_COLORS.indexOf(account.color || "");
+    const nextColor = ACCOUNT_COLORS[(currentIdx + 1) % ACCOUNT_COLORS.length];
+    try {
+      await invoke("set_account_color", { id: account.id, color: nextColor || null });
+      await refresh();
+    } catch (err) {
+      console.error("set_account_color:", err);
+    }
+  });
+
+  // Botón para silenciar
+  const muteBtn = document.createElement("button");
+  muteBtn.type = "button";
+  muteBtn.className = "icon-btn mute-btn" + (account.muted ? " active" : "");
+  muteBtn.title = account.muted ? "Desactivar silencio" : "Silenciar notificaciones";
+  muteBtn.innerHTML = account.muted
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+  muteBtn.addEventListener("click", async () => {
+    try {
+      await invoke("set_account_muted", { id: account.id, muted: !account.muted });
+      await refresh();
+    } catch (err) {
+      console.error("set_account_muted:", err);
+    }
+  });
+
   const openBtn = document.createElement("button");
+  openBtn.type = "button";
   openBtn.className = "open";
   openBtn.textContent = "Abrir";
   openBtn.addEventListener("click", async () => {
@@ -317,6 +404,7 @@ function accountRow(account) {
 
   // Borrado en dos pasos para no depender de diálogos nativos.
   const delBtn = document.createElement("button");
+  delBtn.type = "button";
   delBtn.className = "danger";
   delBtn.textContent = "Borrar";
   let armed = false;
@@ -370,19 +458,78 @@ function accountRow(account) {
     input.addEventListener("blur", commit, { once: true });
   });
 
-  actions.append(openBtn, delBtn);
-  li.append(avatar, name, actions);
+  actions.append(colorBtn, muteBtn, openBtn, delBtn);
+  li.append(reorderDiv, avatar, name, actions);
   return li;
 }
 
 async function refresh() {
   try {
     const accounts = await invoke("list_accounts");
-    listEl.replaceChildren(...accounts.map(accountRow));
+    listEl.replaceChildren(...accounts.map((acc, idx) => accountRow(acc, idx, accounts)));
     emptyEl.hidden = accounts.length > 0;
   } catch (err) {
     console.error("list_accounts:", err);
   }
+}
+
+// ── Diagnóstico ─────────────────────────────────────────
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return (bytes / Math.pow(k, i)).toFixed(1) + " " + sizes[i];
+}
+
+async function loadDiagnostics() {
+  try {
+    const diag = await invoke("get_diagnostics");
+    const h264El = document.getElementById("diag-h264");
+    const h264DetailEl = document.getElementById("diag-h264-detail");
+    if (diag.hasH264Decoder) {
+      h264El.textContent = "Disponible";
+      h264El.className = "diag-status ok";
+      h264DetailEl.textContent = diag.h264DecoderName;
+    } else {
+      h264El.textContent = "No disponible";
+      h264El.className = "diag-status error";
+      h264DetailEl.textContent = "Instala gstreamer1-plugin-libav / gstreamer1.0-libav";
+    }
+
+    const aacEl = document.getElementById("diag-aac");
+    if (diag.hasAacDecoder) {
+      aacEl.textContent = "Disponible";
+      aacEl.className = "diag-status ok";
+    } else {
+      aacEl.textContent = "Integrado o nativo";
+      aacEl.className = "diag-status ok";
+    }
+
+    document.getElementById("diag-webkit").textContent = diag.webkitVersion;
+    document.getElementById("diag-os").textContent = diag.osInfo;
+    document.getElementById("diag-profiles").textContent = formatBytes(diag.profilesSize);
+    document.getElementById("diag-logs").textContent = formatBytes(diag.logSize);
+  } catch (err) {
+    console.error("get_diagnostics:", err);
+  }
+}
+
+function initDiagnostics() {
+  document.getElementById("refresh-diagnostics").addEventListener("click", loadDiagnostics);
+  const statusEl = document.getElementById("diag-action-status");
+  document.getElementById("clear-gst-cache").addEventListener("click", async () => {
+    statusEl.textContent = "Limpiando…";
+    try {
+      await invoke("clear_gstreamer_cache");
+      statusEl.textContent = "Caché de GStreamer borrada con éxito.";
+      statusEl.style.color = "var(--accent)";
+      await loadDiagnostics();
+    } catch (err) {
+      statusEl.textContent = "Error: " + err;
+      statusEl.style.color = "var(--danger)";
+    }
+  });
 }
 
 // Lo llama Rust cuando se pulsa «+» en la barra lateral. El campo puede estar
@@ -426,5 +573,7 @@ formEl.addEventListener("submit", async (ev) => {
   await initFolders();
   await initToggles();
   await initAbout();
+  initDiagnostics();
+  await loadDiagnostics();
   await refresh();
 })();

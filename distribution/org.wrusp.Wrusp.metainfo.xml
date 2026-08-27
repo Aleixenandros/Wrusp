@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.wrusp.Wrusp</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Wrusp</name>
+  <summary>Cliente de escritorio no oficial de WhatsApp para Linux</summary>
+  <description>
+    <p>
+      Wrusp envuelve WhatsApp Web en un webview nativo y añade soporte multicuenta con sesiones aisladas, reproducción de vídeo integrada, captura de medios para notas de voz y cámara, notificaciones de escritorio persistentes y bandeja del sistema.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.wrusp.Wrusp.desktop</launchable>
+  <url type="homepage">https://github.com/Aleixenandros/Wrusp</url>
+  <url type="bugtracker">https://github.com/Aleixenandros/Wrusp/issues</url>
+  <provides>
+    <binary>wrusp</binary>
+  </provides>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+    <category>Chat</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.4.0" date="2026-08-27">
+      <description>
+        <p>Mejoras de experiencia multicuenta, diagnóstico del sistema, soporte para silenciado y personalización de cuentas.</p>
+      </description>
+    </release>
+  </releases>
+</component>

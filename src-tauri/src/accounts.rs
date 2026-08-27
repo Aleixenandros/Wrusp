@@ -24,6 +24,8 @@ pub fn add_account(app: AppHandle, name: String) -> Result<Account, String> {
         id: uuid::Uuid::new_v4().to_string(),
         name,
         zoom: 1.0,
+        color: None,
+        muted: false,
     };
     {
         let state = app.state::<ConfigState>();
@@ -49,6 +51,63 @@ pub fn rename_account(app: AppHandle, id: String, name: String) -> Result<(), St
             return Err("Cuenta no encontrada".into());
         };
         account.name = name;
+        crate::config::save(&app, &cfg);
+    }
+    tray::rebuild_menu(&app);
+    shell::refresh_rails(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_account_color(app: AppHandle, id: String, color: Option<String>) -> Result<(), String> {
+    let color = color
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty());
+    {
+        let state = app.state::<ConfigState>();
+        let mut cfg = state.0.lock().unwrap();
+        let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == id) else {
+            return Err("Cuenta no encontrada".into());
+        };
+        account.color = color;
+        crate::config::save(&app, &cfg);
+    }
+    shell::refresh_rails(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_account_muted(app: AppHandle, id: String, muted: bool) -> Result<(), String> {
+    {
+        let state = app.state::<ConfigState>();
+        let mut cfg = state.0.lock().unwrap();
+        let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == id) else {
+            return Err("Cuenta no encontrada".into());
+        };
+        account.muted = muted;
+        crate::config::save(&app, &cfg);
+    }
+    shell::refresh_rails(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reorder_accounts(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    {
+        let state = app.state::<ConfigState>();
+        let mut cfg = state.0.lock().unwrap();
+        let mut reordered = Vec::with_capacity(cfg.accounts.len());
+        for id in &ids {
+            if let Some(acc) = cfg.accounts.iter().find(|a| &a.id == id).cloned() {
+                reordered.push(acc);
+            }
+        }
+        for acc in &cfg.accounts {
+            if !reordered.iter().any(|a| a.id == acc.id) {
+                reordered.push(acc.clone());
+            }
+        }
+        cfg.accounts = reordered;
         crate::config::save(&app, &cfg);
     }
     tray::rebuild_menu(&app);

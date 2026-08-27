@@ -475,6 +475,33 @@ kbd {
   padding: 10px 12px;
 }
 
+.reorder-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reorder-btn {
+  padding: 2px !important;
+  width: 20px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px !important;
+}
+
+.reorder-btn svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+}
+
+.reorder-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
 .account .avatar {
   width: 34px;
   height: 34px;
@@ -486,6 +513,7 @@ kbd {
   font-weight: 700;
   font-size: 15px;
   flex-shrink: 0;
+  transition: background-color 0.15s ease;
 }
 
 .account .name {
@@ -503,8 +531,46 @@ kbd {
 
 .account .actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+}
+
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+}
+
+.color-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50% !important;
+  border: 2px solid var(--border) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: 0 !important;
+}
+
+.color-btn:hover {
+  transform: scale(1.1);
+}
+
+.mute-btn.active {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .account .actions button {
@@ -547,6 +613,87 @@ kbd {
   text-align: center;
   padding: 28px 0;
   font-size: 14px;
+}
+
+/* ── Diagnóstico ───────────────────────────────────────── */
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.diag-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.diag-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diag-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.diag-status {
+  font-size: 13px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.diag-status.ok {
+  background: rgba(31, 168, 85, 0.15);
+  color: var(--accent);
+}
+
+.diag-status.warn {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+}
+
+.diag-status.error {
+  background: rgba(214, 59, 59, 0.15);
+  color: var(--danger);
+}
+
+.diag-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.diag-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.diag-actions button:hover {
+  border-color: var(--accent);
 }
 
 /* ── Acerca de ────────────────────────────────────────── */

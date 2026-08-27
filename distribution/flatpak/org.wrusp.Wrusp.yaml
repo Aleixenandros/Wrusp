@@ -1,0 +1,43 @@
+app-id: org.wrusp.Wrusp
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: wrusp
+separate-locales: false
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=all
+  - --filesystem=xdg-download
+  - --filesystem=xdg-run/dconf
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.portal.FileChooser
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.Notification
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-*-*
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/wrusp/cargo
+
+modules:
+  - name: wrusp
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --manifest-path src-tauri/Cargo.toml
+      - install -Dm755 src-tauri/target/release/wrusp /app/bin/wrusp
+      - install -Dm644 distribution/org.wrusp.Wrusp.desktop /app/share/applications/org.wrusp.Wrusp.desktop
+      - install -Dm644 distribution/org.wrusp.Wrusp.metainfo.xml /app/share/metainfo/org.wrusp.Wrusp.metainfo.xml
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/org.wrusp.Wrusp.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/org.wrusp.Wrusp.png
+    sources:
+      - type: dir
+        path: ../../

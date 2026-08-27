@@ -332,14 +332,28 @@ fn notification_is_redundant(window_focused: bool, active_account: &str, account
 /// El título que manda WhatsApp Web es el nombre del contacto y el cuerpo, el
 /// mensaje. No se avisa de la cuenta que estás mirando: ya la tienes delante.
 fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
-    let (enabled, accounts) = {
+    let (enabled, privacy, accounts) = {
         let state = app.state::<ConfigState>();
         let cfg = state.0.lock().unwrap();
-        (cfg.notifications, cfg.accounts.clone())
+        (
+            cfg.notifications,
+            cfg.notification_privacy,
+            cfg.accounts.clone(),
+        )
     };
     if !enabled {
         eprintln!("wrusp: notificación descartada: están desactivadas en ajustes");
         return;
+    }
+
+    if let Some(account) = accounts.iter().find(|a| a.id == account_id) {
+        if account.muted {
+            eprintln!(
+                "wrusp: notificación descartada: cuenta «{}» silenciada",
+                account.name
+            );
+            return;
+        }
     }
 
     let focused = app
@@ -359,11 +373,17 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         _ => title.to_string(),
     };
 
+    let body_text = if privacy {
+        "Nuevo mensaje".to_string()
+    } else {
+        body.to_string()
+    };
+
     // El módulo conserva una sola conexión D-Bus y atiende su propia cola fuera
     // del hilo de GTK. Además de no congelar la interfaz si el servidor tarda,
     // esto es imprescindible en GNOME: liga la fuente del aviso al emisor y la
     // destruye en cuanto desaparece su nombre D-Bus.
-    crate::notifications::show(title, body.to_string());
+    crate::notifications::show(account_id.to_string(), title, body_text);
 }
 
 /// Registra los no leídos de una cuenta y refresca bandeja, título y barra.

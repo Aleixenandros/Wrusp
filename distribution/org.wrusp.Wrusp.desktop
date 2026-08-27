@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Wrusp
+GenericName=WhatsApp Client
+Comment=Cliente de escritorio no oficial de WhatsApp
+Exec=wrusp %u
+Icon=org.wrusp.Wrusp
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+StartupNotify=true
+StartupWMClass=wrusp
+MimeType=x-scheme-handler/whatsapp;

@@ -20,6 +20,12 @@ pub struct Account {
     /// Factor de zoom de la vista, recordado por cuenta.
     #[serde(default = "default_zoom")]
     pub zoom: f64,
+    /// Color de acento personalizado para la barra lateral (ej. "#1fa855").
+    #[serde(default)]
+    pub color: Option<String>,
+    /// ¿Notificaciones silenciadas para esta cuenta?
+    #[serde(default)]
+    pub muted: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +69,12 @@ pub struct AppConfig {
     /// Avisar con una notificación del escritorio al llegar un mensaje.
     #[serde(default = "default_true")]
     pub notifications: bool,
+    /// Ocultar contenido del mensaje en notificaciones para mayor privacidad.
+    #[serde(default)]
+    pub notification_privacy: bool,
+    /// Iniciar automáticamente al encender el equipo.
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 fn default_true() -> bool {
@@ -249,6 +261,8 @@ pub fn open_log_dir(state: tauri::State<'_, ConfigState>) -> Result<(), String> 
 pub struct Toggles {
     pub close_to_tray: bool,
     pub notifications: bool,
+    pub notification_privacy: bool,
+    pub autostart: bool,
 }
 
 #[tauri::command]
@@ -257,8 +271,39 @@ pub fn get_toggles(state: tauri::State<'_, ConfigState>) -> Toggles {
     Toggles {
         close_to_tray: cfg.close_to_tray,
         notifications: cfg.notifications,
+        notification_privacy: cfg.notification_privacy,
+        autostart: cfg.autostart,
     }
 }
+
+#[cfg(target_os = "linux")]
+fn autostart_desktop_file() -> Option<PathBuf> {
+    dirs::config_dir().map(|base| base.join("autostart").join("wrusp.desktop"))
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_autostart_enabled(enabled: bool) {
+    let Some(path) = autostart_desktop_file() else {
+        return;
+    };
+    if enabled {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "wrusp".into());
+        let desktop = format!(
+            "[Desktop Entry]\nType=Application\nName=Wrusp\nComment=Cliente no oficial de WhatsApp\nExec=\"{exe}\" --hidden\nIcon=wrusp\nTerminal=false\nCategories=Network;InstantMessaging;\n"
+        );
+        let _ = fs::write(path, desktop);
+    } else if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_autostart_enabled(_enabled: bool) {}
 
 #[tauri::command]
 pub fn set_toggle(app: AppHandle, name: String, enabled: bool) -> Result<(), String> {
@@ -267,9 +312,146 @@ pub fn set_toggle(app: AppHandle, name: String, enabled: bool) -> Result<(), Str
     match name.as_str() {
         "closeToTray" => cfg.close_to_tray = enabled,
         "notifications" => cfg.notifications = enabled,
+        "notificationPrivacy" => cfg.notification_privacy = enabled,
+        "autostart" => {
+            cfg.autostart = enabled;
+            set_autostart_enabled(enabled);
+        }
         other => return Err(format!("Ajuste desconocido: {other}")),
     }
     save(&app, &cfg);
+    Ok(())
+}
+
+/// Diagnóstico del sistema y estado de los componentes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemDiagnostics {
+    pub webkit_version: String,
+    pub has_h264_decoder: bool,
+    pub h264_decoder_name: String,
+    pub has_aac_decoder: bool,
+    pub gstreamer_cache_size: u64,
+    pub profiles_size: u64,
+    pub log_size: u64,
+    pub os_info: String,
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                } else if meta.is_dir() {
+                    total += dir_size(&entry.path());
+                }
+            }
+        }
+    }
+    total
+}
+
+#[tauri::command]
+pub fn get_diagnostics(state: tauri::State<'_, ConfigState>) -> SystemDiagnostics {
+    let cfg = state.0.lock().unwrap();
+
+    let mut has_h264 = false;
+    let mut h264_name = "No detectado".to_string();
+    let mut has_aac = false;
+
+    // Comprobar con gst-inspect-1.0 si está disponible
+    if let Ok(out) = std::process::Command::new("gst-inspect-1.0")
+        .arg("avdec_h264")
+        .output()
+    {
+        if out.status.success() {
+            has_h264 = true;
+            h264_name = "avdec_h264 (FFmpeg / libavcodec)".to_string();
+        }
+    }
+    if !has_h264 {
+        if let Ok(out) = std::process::Command::new("gst-inspect-1.0")
+            .arg("openh264dec")
+            .output()
+        {
+            if out.status.success() {
+                has_h264 = true;
+                h264_name = "openh264dec (Baseline)".to_string();
+            }
+        }
+    }
+    if let Ok(out) = std::process::Command::new("gst-inspect-1.0")
+        .arg("avdec_aac")
+        .output()
+    {
+        if out.status.success() {
+            has_aac = true;
+        }
+    }
+
+    // Tamaño de caché de GStreamer
+    let gst_cache_dir = dirs::cache_dir()
+        .map(|c| c.join("gstreamer-1.0"))
+        .unwrap_or_default();
+    let gst_cache_size = dir_size(&gst_cache_dir);
+
+    // Tamaño de perfiles
+    let prof_dir = profiles_root_dir();
+    let profiles_size = dir_size(&prof_dir);
+
+    // Tamaño de logs
+    let log_path = crate::logs::effective_dir(&cfg.log_dir).join("wrusp.log");
+    let log_size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+
+    #[cfg(target_os = "linux")]
+    let webkit_version = unsafe {
+        format!(
+            "WebKitGTK {}.{}.{}",
+            webkit2gtk::ffi::webkit_get_major_version(),
+            webkit2gtk::ffi::webkit_get_minor_version(),
+            webkit2gtk::ffi::webkit_get_micro_version()
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let webkit_version = "Nativo de la plataforma".to_string();
+
+    let os_info = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+
+    SystemDiagnostics {
+        webkit_version,
+        has_h264_decoder: has_h264,
+        h264_decoder_name: h264_name,
+        has_aac_decoder: has_aac,
+        gstreamer_cache_size: gst_cache_size,
+        profiles_size,
+        log_size,
+        os_info,
+    }
+}
+
+/// Borra los ficheros de caché del registro de GStreamer para forzar su reescaneo al reiniciar.
+#[tauri::command]
+pub fn clear_gstreamer_cache() -> Result<(), String> {
+    let Some(gst_cache_dir) = dirs::cache_dir().map(|c| c.join("gstreamer-1.0")) else {
+        return Err("No se encontró la carpeta de caché".into());
+    };
+    if !gst_cache_dir.exists() {
+        return Ok(());
+    }
+    if let Ok(entries) = fs::read_dir(&gst_cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .file_name()
+                .map(|n| n.to_string_lossy().starts_with("registry."))
+                .unwrap_or(false)
+            {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -361,20 +543,47 @@ pub fn open_external(url: String) -> Result<(), String> {
 
 /// Abre el selector de carpetas del escritorio y devuelve la ruta elegida.
 ///
-/// Usa el portal XDG por línea de órdenes en vez del plugin de diálogos de
-/// Tauri para no añadir otra dependencia; si no hay portal, la UI permite
-/// escribir la ruta a mano.
+/// Prueba en cascada: zenity (GTK), kdialog (KDE/Qt) o qarma; si no hay
+/// selector disponible, la UI permite escribir la ruta a mano.
 #[tauri::command]
 pub fn pick_folder() -> Option<String> {
-    let out = std::process::Command::new("zenity")
+    // 1. Zenity (GNOME / GTK)
+    if let Ok(out) = std::process::Command::new("zenity")
         .args(["--file-selection", "--directory", "--title=Elegir carpeta"])
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+    {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
     }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!path.is_empty()).then_some(path)
+    // 2. Kdialog (KDE / Qt)
+    if let Ok(out) = std::process::Command::new("kdialog")
+        .args(["--getexistingdirectory", "--title", "Elegir carpeta"])
+        .output()
+    {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    // 3. Qarma (clon de zenity en Qt)
+    if let Ok(out) = std::process::Command::new("qarma")
+        .args(["--file-selection", "--directory", "--title=Elegir carpeta"])
+        .output()
+    {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// Estado global gestionado por Tauri.
@@ -419,5 +628,55 @@ pub fn save(app: &AppHandle, cfg: &AppConfig) {
             }
         }
         Err(err) => eprintln!("wrusp: no se pudo serializar la configuración: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializar_config_antigua_con_valores_por_defecto() {
+        let json_antiguo = r#"{
+            "accounts": [
+                { "id": "123", "name": "Personal", "zoom": 1.0 }
+            ],
+            "theme": "system",
+            "close_to_tray": true,
+            "notifications": true
+        }"#;
+
+        let cfg: AppConfig = serde_json::from_str(json_antiguo).expect("deserializar");
+        assert_eq!(cfg.accounts.len(), 1);
+        assert_eq!(cfg.accounts[0].color, None);
+        assert!(!cfg.accounts[0].muted);
+        assert!(!cfg.notification_privacy);
+        assert!(!cfg.autostart);
+    }
+
+    #[test]
+    fn serializar_y_deserializar_cuenta_completa() {
+        let cuenta = Account {
+            id: "abc".into(),
+            name: "Trabajo".into(),
+            zoom: 1.2,
+            color: Some("#3b82f6".into()),
+            muted: true,
+        };
+        let raw = serde_json::to_string(&cuenta).unwrap();
+        let vuelta: Account = serde_json::from_str(&raw).unwrap();
+        assert_eq!(vuelta.color, Some("#3b82f6".into()));
+        assert!(vuelta.muted);
+        assert_eq!(vuelta.zoom, 1.2);
+    }
+
+    #[test]
+    fn ruta_unica_no_pisa_ficheros() {
+        let temp = std::env::temp_dir().join("wrusp-test-unique.txt");
+        let _ = fs::write(&temp, b"test");
+        let unica = unique_path(temp.clone());
+        assert_ne!(unica, temp);
+        assert!(unica.display().to_string().contains("(2)"));
+        let _ = fs::remove_file(temp);
     }
 }
