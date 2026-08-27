@@ -95,8 +95,13 @@ fn redirect(path: &std::path::Path) {
     }
     let (lectura, escritura) = (extremos[0], extremos[1]);
     // Búfer holgado para absorber las ráfagas sin que nadie llegue a esperar.
-    // Si el núcleo no lo concede, se queda con el suyo y no pasa nada.
-    unsafe { libc::fcntl(escritura, libc::F_SETPIPE_SZ, 1 << 20) };
+    // Si el núcleo no lo concede, se queda con el suyo y no pasa nada. Es cosa
+    // de Linux: en el resto de Unix no existe esta opción y vale el tamaño por
+    // defecto, que ya absorbe bastante.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::fcntl(escritura, libc::F_SETPIPE_SZ, 1 << 20)
+    };
     unsafe {
         libc::dup2(escritura, 1);
         libc::dup2(escritura, 2);

@@ -245,6 +245,10 @@ pub fn hide_webcodecs_script() -> String {
 ///
 /// Banco propio, obligatorio antes de tocar esto:
 /// `cargo run --example banco_faststart`.
+///
+/// Solo en Linux: el problema es de WebKitGTK sirviendo blobs, y en los otros
+/// motores esto sería trabajo para nada.
+#[cfg(target_os = "linux")]
 pub fn fix_large_mp4_blobs_script() -> String {
     r#"(function () {
   // ── Remux «faststart» ────────────────────────────────────────────────────
@@ -655,6 +659,12 @@ pub fn fix_large_mp4_blobs_script() -> String {
   }).observe(document, { childList: true, subtree: true });
 })();"#
         .to_string()
+}
+
+/// Fuera de Linux el motor sirve los blobs de vídeo por su cuenta.
+#[cfg(not(target_os = "linux"))]
+pub fn fix_large_mp4_blobs_script() -> String {
+    String::new()
 }
 
 /// Completa el disfraz de Chrome que el user-agent empieza.
