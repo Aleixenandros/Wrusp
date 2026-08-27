@@ -171,8 +171,6 @@ pub fn hide_native_app_promo_script() -> String {
     ocultos = nuevos;
   }
 
-  // WhatsApp repinta constantemente; sin este freno el repaso saldría cientos
-  // de veces por cada chat que se abre.
   let pendiente = 0;
   const pedirRepaso = () => {
     if (pendiente) return;
@@ -221,51 +219,42 @@ pub fn hide_webcodecs_script() -> String {
         .to_string()
 }
 
-/// Evita la corrupción de MP4 grandes servidos como `blob:` en WebKitGTK.
+/// Evita la sobrecarga de pipelines y la corrupción de MP4 servidos como `blob:` en WebKitGTK.
 ///
-/// WebKit 2.52 obliga a usar `playbin3` para los blobs y, si el vídeo se
-/// precarga, coloca delante un búfer circular de solo 2 MiB. Un MP4 mayor con
-/// el átomo `moov` al final hace que el demultiplexor lea primero el final y
-/// vuelva después al principio; con GStreamer 1.28 el búfer mezcla esos rangos
-/// y entrega H.264/AAC corrupto. El síntoma exacto es audio/tiempo avanzando,
-/// pantalla gris y vídeo que aparece varios segundos tarde.
-///
-/// La misma secuencia de bytes mediante una URL `data:` no pasa por esa ruta.
-/// Solo se materializan así los blobs MP4 que superan el límite problemático,
-/// que realmente se asignan a un `<video>` **y cuando ese vídeo va a
-/// reproducirse**. Convertirlos nada más abrir un chat leía y duplicaba en
-/// memoria todos sus vídeos a la vez, aunque el usuario no fuese a verlos.
-///
-/// Los blobs de descargas, imágenes y vídeos pequeños conservan el
-/// comportamiento nativo. La URL original sigue devolviéndose sin cambios para
-/// no alterar el contrato de `createObjectURL`, y las referencias retenidas se
-/// sueltan cuando WhatsApp retira el reproductor del DOM.
+/// 1. Precarga perezosa: WebKitGTK arranca un pipeline de GStreamer por cada
+///    `<video>` o `<audio>` en el DOM salvo que su precarga sea `none`. En chats
+///    con decenas de notas de voz y vídeos, esto creaba más de 70 demuxers
+///    concurrentes saturando la CPU al 100%. Se fuerza `preload="none"` en medios
+///    inactivos y solo se activa la precarga al solicitar la reproducción (`play()`).
+/// 2. Conversión bajo demanda de blobs de vídeo/audio a `data:` URL al reproducir:
+///    WebKit 2.52 falla con el buffer circular de 2 MiB en blobs MP4 cuyo átomo
+///    `moov` está al final, corrompiendo el stream y lanzando bucles infinitos de
+///    errores en `avdec_aac` y `h264parse`. La entrega en `data:` evita esa ruta.
 #[cfg(target_os = "linux")]
 pub fn fix_large_mp4_blobs_script() -> String {
     r#"(function () {
-  const LIMITE_BUFFER_WEBKIT = 2 * 1024 * 1024;
   const RETENCION_NODO_NUEVO = 60_000;
-  const esMp4 = /^(video\/mp4|video\/quicktime|application\/mp4)(?:$|;)/i;
+  const esMedio = /^(video\/|audio\/|application\/mp4|application\/octet-stream)/i;
   const crearUrl = URL.createObjectURL;
   const revocarUrl = URL.revokeObjectURL;
   const candidatos = new Map();
   const descriptorVideo = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
   const descriptorSource = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
-  const setAttributeNativo = Element.prototype.setAttribute;
+  const descriptorPreload = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');
   const reproducirNativo = HTMLMediaElement.prototype.play;
   const reproduccionesPendientes = new WeakMap();
   const videosVigilados = new WeakSet();
   let limpiezaPendiente = 0;
 
-  function videoDe(nodo) {
-    if (nodo instanceof HTMLVideoElement) return nodo;
-    if (nodo instanceof HTMLSourceElement && nodo.parentElement instanceof HTMLVideoElement)
+  function medioDe(nodo) {
+    if (nodo instanceof HTMLMediaElement) return nodo;
+    if (nodo instanceof HTMLSourceElement && nodo.parentElement instanceof HTMLMediaElement)
       return nodo.parentElement;
     return null;
   }
 
   function urlActual(nodo) {
-    if (nodo instanceof HTMLVideoElement && descriptorVideo && descriptorVideo.get)
+    if (nodo instanceof HTMLMediaElement && descriptorVideo && descriptorVideo.get)
       return descriptorVideo.get.call(nodo);
     if (nodo instanceof HTMLSourceElement && descriptorSource && descriptorSource.get)
       return descriptorSource.get.call(nodo);
@@ -273,45 +262,46 @@ pub fn fix_large_mp4_blobs_script() -> String {
   }
 
   function ponerUrl(nodo, url) {
-    if (nodo instanceof HTMLVideoElement && descriptorVideo && descriptorVideo.set)
+    if (nodo instanceof HTMLMediaElement && descriptorVideo && descriptorVideo.set)
       descriptorVideo.set.call(nodo, url);
     else if (nodo instanceof HTMLSourceElement && descriptorSource && descriptorSource.set)
       descriptorSource.set.call(nodo, url);
     else
-      setAttributeNativo.call(nodo, 'src', url);
+      nodo.setAttribute('src', url);
   }
 
-  function restaurar(video, posicion, reproduciendo, urlDatos) {
+  function restaurar(medio, posicion, reproduciendo, urlDatos) {
     const listo = () => {
-      if (urlActual(video) !== urlDatos) return;
-      if (posicion > 0 && Number.isFinite(video.duration)) {
-        try { video.currentTime = Math.min(posicion, Math.max(0, video.duration - 0.001)); }
-        catch (e) { /* el medio pudo cambiar otra vez */ }
+      if (urlActual(medio) !== urlDatos) return;
+      if (posicion > 0 && Number.isFinite(medio.duration)) {
+        try { medio.currentTime = Math.min(posicion, Math.max(0, medio.duration - 0.001)); }
+        catch (e) { /* el medio pudo cambiar */ }
       }
-      if (reproduciendo || video.autoplay)
-        video.play().catch(() => {});
+      if (reproduciendo || medio.autoplay)
+        medio.play().catch(() => {});
     };
-    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) listo();
-    else video.addEventListener('loadedmetadata', listo, { once: true });
+    if (medio.readyState >= HTMLMediaElement.HAVE_METADATA) listo();
+    else medio.addEventListener('loadedmetadata', listo, { once: true });
   }
 
   function reemplazarNodo(nodo, original, datos) {
     if (urlActual(nodo) !== original && nodo.getAttribute('src') !== original) return;
-    const video = videoDe(nodo);
-    if (!video) return;
+    const medio = medioDe(nodo);
+    if (!medio) return;
 
-    const posicion = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-    const reproduciendo = !video.paused;
+    const posicion = Number.isFinite(medio.currentTime) ? medio.currentTime : 0;
+    const reproduciendo = !medio.paused;
+    if (descriptorPreload && descriptorPreload.set) descriptorPreload.set.call(medio, 'auto');
     ponerUrl(nodo, datos);
-    video.load();
-    restaurar(video, posicion, reproduciendo, datos);
+    medio.load();
+    restaurar(medio, posicion, reproduciendo, datos);
   }
 
   function reemplazar(original, entrada) {
     if (!entrada.datos) return;
     for (const nodo of entrada.nodos.keys())
       reemplazarNodo(nodo, original, entrada.datos);
-    for (const nodo of document.querySelectorAll('video[src], source[src]')) {
+    for (const nodo of document.querySelectorAll('video[src], audio[src], source[src]')) {
       if (urlActual(nodo) === original || nodo.getAttribute('src') === original) {
         entrada.nodos.set(nodo, true);
         reemplazarNodo(nodo, original, entrada.datos);
@@ -351,52 +341,54 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return entrada.promesa;
   }
 
-  function prepararReproduccion(video, pendiente) {
+  function prepararReproduccion(medio, pendiente) {
     const entrada = candidatos.get(pendiente.original);
     if (!entrada) {
-      if (reproduccionesPendientes.get(video) === pendiente)
-        reproduccionesPendientes.delete(video);
+      if (reproduccionesPendientes.get(medio) === pendiente)
+        reproduccionesPendientes.delete(medio);
       return Promise.resolve();
     }
     return convertir(pendiente.original, entrada).then(() => {
-      if (reproduccionesPendientes.get(video) === pendiente)
-        reproduccionesPendientes.delete(video);
+      if (reproduccionesPendientes.get(medio) === pendiente)
+        reproduccionesPendientes.delete(medio);
     });
   }
 
-  // `play()` cubre los controles de WhatsApp. El evento cubre además el
-  // autoplay iniciado por el propio motor, que no tiene por qué pasar por el
-  // método JavaScript sustituido.
-  function vigilarAutoplay(video) {
-    if (videosVigilados.has(video)) return;
-    videosVigilados.add(video);
-    video.addEventListener('play', () => {
-      const pendiente = reproduccionesPendientes.get(video);
+  function vigilarAutoplay(medio) {
+    if (videosVigilados.has(medio)) return;
+    videosVigilados.add(medio);
+    medio.addEventListener('play', () => {
+      const pendiente = reproduccionesPendientes.get(medio);
       if (!pendiente) return;
-      video.pause();
-      prepararReproduccion(video, pendiente).then(() => {
-        if (video.isConnected) reproducirNativo.call(video).catch(() => {});
+      medio.pause();
+      prepararReproduccion(medio, pendiente).then(() => {
+        if (medio.isConnected) reproducirNativo.call(medio).catch(() => {});
       });
     });
   }
 
   function registrar(nodo, valor) {
-    const video = videoDe(nodo);
-    if (!video) return null;
+    const medio = medioDe(nodo);
+    if (!medio) return null;
+    // Forzar preload="none" por defecto para no arrancar pipelines en medios inactivos
+    if (descriptorPreload && descriptorPreload.get && descriptorPreload.set) {
+      const actualPreload = descriptorPreload.get.call(medio);
+      if (actualPreload !== 'none' && !medio.autoplay && medio.paused) {
+        descriptorPreload.set.call(medio, 'none');
+      }
+    }
     const original = String(valor);
     const entrada = candidatos.get(original);
     if (!entrada) {
-      const anterior = reproduccionesPendientes.get(video);
+      const anterior = reproduccionesPendientes.get(medio);
       if (anterior && anterior.original !== original)
-        reproduccionesPendientes.delete(video);
+        reproduccionesPendientes.delete(medio);
       return null;
     }
     entrada.nodos.set(nodo, entrada.nodos.get(nodo) || nodo.isConnected);
-    vigilarAutoplay(video);
+    vigilarAutoplay(medio);
     if (!entrada.datos) {
-      // Guardar qué hay que convertir cuesta unos bytes. La lectura completa y
-      // la URL base64 se posponen hasta que este vídeo concreto se reproduzca.
-      reproduccionesPendientes.set(video, { original });
+      reproduccionesPendientes.set(medio, { original });
     }
     return entrada.datos;
   }
@@ -418,9 +410,6 @@ pub fn fix_large_mp4_blobs_script() -> String {
           if (!nodoUsa(nodo, original, entrada)) entrada.nodos.delete(nodo);
           continue;
         }
-        // WhatsApp puede fijar src y revocar la URL antes de insertar el
-        // reproductor. Se le da margen solo si aún no llegó a estar en el DOM;
-        // uno que ya salió de un chat se libera inmediatamente.
         const aunPuedeInsertarse = !estuvoConectado && entrada.revocadaEn
           && ahora - entrada.revocadaEn < RETENCION_NODO_NUEVO;
         if (!aunPuedeInsertarse) entrada.nodos.delete(nodo);
@@ -439,9 +428,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   URL.createObjectURL = function (objeto) {
     const url = crearUrl.call(this, objeto);
-    if (objeto instanceof Blob
-        && objeto.size > LIMITE_BUFFER_WEBKIT
-        && esMp4.test(objeto.type || ''))
+    if (objeto instanceof Blob && (objeto.type ? esMedio.test(objeto.type) : true))
       candidatos.set(url, {
         blob: objeto,
         lector: null,
@@ -461,12 +448,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (!entrada) return revocarUrl.call(this, url);
     entrada.revocada = true;
     entrada.revocadaEn = Date.now();
-    // La referencia directa al Blob permite convertirlo después aunque su URL
-    // ya esté revocada. Se conserva solo mientras algún reproductor la use.
     revocarUrl.call(this, url);
     pedirLimpieza();
-    // Evita retener indefinidamente un reproductor construido fuera del DOM
-    // que finalmente no llegue a insertarse.
     setTimeout(pedirLimpieza, RETENCION_NODO_NUEVO + 1_000);
   };
 
@@ -486,46 +469,29 @@ pub fn fix_large_mp4_blobs_script() -> String {
   envolverSrc(HTMLSourceElement.prototype, descriptorSource);
 
   HTMLMediaElement.prototype.play = function () {
+    if (descriptorPreload && descriptorPreload.set) descriptorPreload.set.call(this, 'auto');
     const pendiente = reproduccionesPendientes.get(this);
     if (!pendiente) return reproducirNativo.call(this);
     return prepararReproduccion(this, pendiente)
       .then(() => reproducirNativo.call(this));
   };
 
-  Element.prototype.setAttribute = function (nombre, valor) {
-    let efectivo = valor;
-    if (String(nombre).toLowerCase() === 'src')
-      efectivo = registrar(this, valor) || valor;
-    return setAttributeNativo.call(this, nombre, efectivo);
-  };
-
   function registrarArbol(raiz) {
     if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
-    if (raiz.matches('video[src], source[src]'))
+    if (raiz.matches('video[src], audio[src], source[src]'))
       registrar(raiz, urlActual(raiz) || raiz.getAttribute('src'));
-    for (const nodo of raiz.querySelectorAll('video[src], source[src]'))
+    for (const nodo of raiz.querySelectorAll('video[src], audio[src], source[src]'))
       registrar(nodo, urlActual(nodo) || nodo.getAttribute('src'));
   }
 
-  // Se inspeccionan solo los nodos que cambian. Recorrer el documento entero
-  // en cada mutación añadía trabajo precisamente al abrir chats con muchos
-  // adjuntos.
   new MutationObserver((mutaciones) => {
     let necesitaLimpieza = false;
     for (const mutacion of mutaciones) {
-      if (mutacion.type === 'attributes') {
-        registrar(mutacion.target,
-          urlActual(mutacion.target) || mutacion.target.getAttribute('src'));
-        necesitaLimpieza = true;
-      } else {
-        for (const nodo of mutacion.addedNodes) registrarArbol(nodo);
-        if (mutacion.removedNodes.length) necesitaLimpieza = true;
-      }
+      for (const nodo of mutacion.addedNodes) registrarArbol(nodo);
+      if (mutacion.removedNodes.length) necesitaLimpieza = true;
     }
     if (necesitaLimpieza) pedirLimpieza();
   }).observe(document, {
-    attributes: true,
-    attributeFilter: ['src'],
     childList: true,
     subtree: true,
   });
@@ -546,9 +512,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
 /// ofrece «WhatsApp para Mac» en la bienvenida, junto al código QR y en una
 /// ventana emergente.
 ///
-/// Todo lo que se define aquí es lo que un Chrome real expone y WebKitGTK no:
-/// `window.chrome`, `userAgentData`, la lista de complementos del visor de PDF
-/// y un par de propiedades de `navigator`. No se toca nada que ya exista.
+/// Además, en Linux las fuentes de emojis COLRv1 vectoriales no están totalmente
+/// soportadas por Cairo/WebKitGTK. Al disfrazar la plataforma como Windows,
+/// WhatsApp Web entrega su conjunto completo de imágenes/sprites de emojis
+/// (estilo Apple), asegurando que el 100% de los emojis se vean sin huecos en blanco.
 pub fn disguise_script() -> String {
     format!(
         r#"(function () {{
@@ -567,11 +534,9 @@ pub fn disguise_script() -> String {
     {{ brand: 'Chromium', version: '{v}' }},
     {{ brand: 'Google Chrome', version: '{v}' }},
   ];
-  const platform = navigator.platform.indexOf('Win') === 0
-    ? 'Windows'
-    : navigator.platform.indexOf('Mac') === 0
-    ? 'macOS'
-    : 'Linux';
+  // Windows garantiza el juego completo de emojis de WhatsApp y atajos con Ctrl
+  const platform = 'Windows';
+  enNavigator('platform', 'Win32');
 
   // WebKit no implementa userAgentData; sin él, algunos detectores descartan
   // Chrome pese al user-agent.
@@ -588,7 +553,7 @@ pub fn disguise_script() -> String {
         mobile: false,
         model: '',
         platform,
-        platformVersion: '6.0.0',
+        platformVersion: '10.0.0',
         uaFullVersion: '{v}.0.0.0',
       }}),
       toJSON: () => ({{ brands, mobile: false, platform }}),

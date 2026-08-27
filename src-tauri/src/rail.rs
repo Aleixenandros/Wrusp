@@ -226,7 +226,7 @@ pub fn runtime_script(own: &str) -> String {
   function corregirCapas() {{
     const w = st().width;
     const cand = document.querySelectorAll(
-      'body > *, body > * > *, #app > *, #app > * > *, [data-animate-media-viewer]'
+      '[data-animate-media-viewer], [data-animate-modal-popup], [data-animate-modal-backdrop], body > [role="dialog"], #app > [role="dialog"], body > div[tabindex="-1"]'
     );
     for (const el of cand) {{
       if (el.dataset.wruspAjustado) continue;

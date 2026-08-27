@@ -4,6 +4,22 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.1] — 2026-08-27
+
+### Corregido
+
+- **Rendimiento en chats multimedia sin picos de CPU ni cuelgues:**
+  - Precarga perezosa (`preload="none"`) en audios y vídeos inactivos: evita que WebKitGTK arranque decenas de pipelines concurrentes de GStreamer al abrir un chat. La carga solo se inicia al reproducir.
+  - Eliminado el límite restrictivo de 2 MiB en la conversión de blobs a `data:` URL, evitando la corrupción de buffers y bucles de decodificación en `avdec_aac` y `h264parse`.
+  - Eliminado el recálculo forzado de estilos (`layout thrashing`) en `corregirCapas` sobre burbujas de mensajes.
+  - Reducido el nivel de registro por defecto de GStreamer a `GST_DEBUG=1` para evitar saturación de E/S de disco.
+- **Visualización completa de emojis:**
+  - Configurado el disfraz de plataforma para que WhatsApp Web entregue su conjunto completo de imágenes de emojis estilo Apple, solventando los huecos en blanco causados por la incompatibilidad de WebKitGTK con la fuente vectorial `Noto-COLRv1.ttf` en Linux.
+- **Arrastrar y soltar ficheros locales:**
+  - Captura de eventos de soltado a nivel de ventana principal GTK (`WindowEvent::DragDrop`) y enrutado directo a la vista de chat activa.
+- **Responsividad de los botones de la ventana:**
+  - Implementada caché de estado en `icon::apply` para evitar lecturas de disco y operaciones síncronas innecesarias en el bucle principal de GTK ante cambios de no leídos.
+
 ## [0.4.0] — 2026-08-27
 
 ### Añadido

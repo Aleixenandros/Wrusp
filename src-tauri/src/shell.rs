@@ -187,7 +187,7 @@ fn handle_command(app: &AppHandle, url: &tauri::Url) {
             // Lo pegado, cuando el motor no se lo entrega a la página (ver
             // `filedrop`). Va a la vista visible, no a la que diga la página.
             "pegar" => {
-                let etiqueta = active_label(&app);
+                let etiqueta = active_view_label(&app);
                 if etiqueta != SETTINGS_VIEW {
                     crate::filedrop::pegar(&app, &etiqueta);
                 }
@@ -476,7 +476,7 @@ fn refresh_unread_indicators(app: &AppHandle) {
 }
 
 /// Etiqueta de la vista que debería verse ahora mismo.
-fn active_label(app: &AppHandle) -> String {
+pub fn active_view_label(app: &AppHandle) -> String {
     let active = app.state::<ActiveView>().0.lock().unwrap().clone();
     if active == SETTINGS_VIEW {
         SETTINGS_VIEW.to_string()
@@ -490,7 +490,7 @@ pub fn apply_visibility(app: &AppHandle) {
     let Some(window) = app.get_window(MAIN_WINDOW) else {
         return;
     };
-    let target = active_label(app);
+    let target = active_view_label(app);
     for view in window.webviews() {
         let _ = if view.label() == target {
             view.show()

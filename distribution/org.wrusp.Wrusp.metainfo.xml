@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.1" date="2026-08-27">
+      <description>
+        <p>Optimización de rendimiento en chats multimedia (eliminación de picos de CPU y cuelgues), corrección de visualización completa de emojis, solución para arrastrar y soltar ficheros, y mejora de responsividad de la ventana.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-08-27">
       <description>
         <p>Mejoras de experiencia multicuenta, diagnóstico del sistema, soporte para silenciado y personalización de cuentas.</p>

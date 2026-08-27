@@ -38,11 +38,27 @@ pub fn current(app: &AppHandle) -> Option<Image<'static>> {
         })
 }
 
+use std::sync::Mutex;
+
+static LAST_APPLIED: Mutex<Option<(String, u32)>> = Mutex::new(None);
+
 /// Aplica el icono configurado, con la insignia de no leídos si procede, a la
 /// bandeja y a la ventana (que es lo que ve la barra de tareas).
 pub fn apply(app: &AppHandle) {
-    let Some(base) = current(app) else { return };
+    let icon_name = app.state::<ConfigState>().0.lock().unwrap().icon.clone();
     let unread = crate::shell::total_unread(app);
+
+    {
+        let mut last = LAST_APPLIED.lock().unwrap();
+        if let Some((prev_name, prev_unread)) = last.as_ref() {
+            if *prev_name == icon_name && *prev_unread == unread {
+                return;
+            }
+        }
+        *last = Some((icon_name.clone(), unread));
+    }
+
+    let Some(base) = current(app) else { return };
     let icon = crate::badge::with_unread(&base, unread).unwrap_or(base);
 
     if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {

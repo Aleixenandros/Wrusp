@@ -203,6 +203,16 @@ fn main() {
             // En Windows y macOS los webviews hijos tienen dimensiones propias
             // que hay que refrescar (en Linux el vbox ya reparte el espacio).
             WindowEvent::Resized(_) => shell::sync_bounds(window.app_handle()),
+            WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) => {
+                let handle = window.app_handle().clone();
+                let etiqueta = shell::active_view_label(&handle);
+                if etiqueta != shell::SETTINGS_VIEW {
+                    let escala = window.scale_factor().unwrap_or(1.0);
+                    let x = (position.x / escala).round() as i64;
+                    let y = (position.y / escala).round() as i64;
+                    crate::filedrop::soltar(&handle, &etiqueta, paths.clone(), x, y);
+                }
+            }
             _ => {}
         })
         .build(tauri::generate_context!())

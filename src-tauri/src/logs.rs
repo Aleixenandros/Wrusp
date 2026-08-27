@@ -53,9 +53,9 @@ pub fn init() {
     {
         let _ = fs::rename(&path, dir.join(PREVIOUS_FILE));
     }
-    // Errores y avisos de GStreamer: salen por stderr, que ya apunta al log.
+    // Errores de GStreamer: solo errores críticos (1) por defecto para no saturar E/S.
     if std::env::var_os("GST_DEBUG").is_none() {
-        std::env::set_var("GST_DEBUG", "2");
+        std::env::set_var("GST_DEBUG", "1");
     }
     redirect(&path);
 }

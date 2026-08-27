@@ -373,8 +373,9 @@ pub const SCRIPT: &str = r#"(function () {
     // si no, el centro de la vista, que cae dentro del panel de conversación.
     const punto = x < 0 ? null : document.elementFromPoint(x, y);
     const foco = document.activeElement;
+    const chat = document.querySelector('#main, [role="region"], [data-testid="conversation-panel-wrapper"], footer, [contenteditable="true"]');
     const centro = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
-    const destinos = [punto, foco, centro, document.body]
+    const destinos = [punto, foco, chat, centro, document.body]
       .filter((d, i, todos) => d && todos.indexOf(d) === i);
 
     // Lo pegado se entrega primero como pegado, que es lo que WhatsApp espera
