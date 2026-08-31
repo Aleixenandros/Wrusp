@@ -4,6 +4,20 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.4] — 2026-08-31
+
+### Corregido
+
+- **Eliminación de cuelgues al entrar a chats con múltiples vídeos o GIFs:**
+  - Se implementa control de concurrencia y visibilidad (`IntersectionObserver` / Viewport Throttling) para elementos `<video>`. Los vídeos o GIFs con `autoplay` que están fuera de la pantalla no abren pipelines innecesarios ni saturan la CPU.
+  - Manejo no destructivo de avisos y errores de transporte transitorios en `vigilarFallo`: evita que stalls o hipos de buffering eliminen permanentemente el `src` del reproductor.
+
+- **Optimización de memoria RAM:**
+  - Se añade un LRU Cache con límite acotado (máximo 35 elementos) y revocación automática de `ObjectURL` para Blobs multimedia huérfanos, evitando la acumulación desmedida de memoria durante sesiones de chat prolongadas.
+
+- **Rendimiento de WebKitGTK:**
+  - Habilitadas las directivas de desplazamiento suave y caché de páginas (`enable_smooth_scrolling` y `enable_page_cache`).
+
 ## [0.4.3] — 2026-08-27
 
 ### Corregido

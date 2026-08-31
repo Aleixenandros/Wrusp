@@ -415,6 +415,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const descriptorPrecarga = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');
   const ponerAtributo = Element.prototype.setAttribute;
 
+  // Límite máximo de candidatos retenidos en memoria (LRU) para evitar fugas de RAM.
+  const MAX_CANDIDATOS = 35;
   const candidatos = new Map();   // url del blob → { blob, arreglada, trabajo }
   const fallidas = new Set();     // urls que ya reventaron: no se reintentan
   const vigilados = new WeakSet();
@@ -423,6 +425,42 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const anotar = (texto) => {
     if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
   };
+
+  function registrarCandidato(url, obj) {
+    if (candidatos.size >= MAX_CANDIDATOS) {
+      const primeraClave = candidatos.keys().next().value;
+      if (primeraClave) {
+        const vieja = candidatos.get(primeraClave);
+        if (vieja && vieja.arreglada) {
+          try { revocarUrl.call(URL, vieja.arreglada); } catch (e) {}
+        }
+        candidatos.delete(primeraClave);
+      }
+    }
+    candidatos.set(url, obj);
+  }
+
+  // Observador de visibilidad para suspender la decodificación de vídeos fuera del viewport
+  let visorInterseccion = null;
+  if (typeof IntersectionObserver === 'function') {
+    visorInterseccion = new IntersectionObserver((entradas) => {
+      for (const entrada of entradas) {
+        const medio = entrada.target;
+        if (!(medio instanceof HTMLMediaElement)) continue;
+        if (!entrada.isIntersecting) {
+          if (medio instanceof HTMLVideoElement && !medio.paused && medio.autoplay) {
+            try { medio.pause(); } catch (e) {}
+          }
+        }
+      }
+    }, { rootMargin: '50px' });
+  }
+
+  function vigilarVisibilidad(medio) {
+    if (visorInterseccion && medio instanceof HTMLVideoElement) {
+      visorInterseccion.observe(medio);
+    }
+  }
 
   function medioDe(nodo) {
     if (nodo instanceof HTMLMediaElement) return nodo;
@@ -473,13 +511,17 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // Desmontar el pipeline borra `error`, y sin este rastro no hay forma de
       // saber después qué pasó (el banco lo lee de aquí).
       window.__wruspUltimoFallo = { codigo, url };
-      if (url) fallidas.add(url);
-      try {
-        medio.pause();
-        medio.removeAttribute('src');
-        medio.load(); // desmonta el pipeline; sin esto el bucle sigue
-      } catch (e) { /* el medio ya no está */ }
-      anotar('medio con fallo de decodificación (código ' + codigo + '): pipeline detenido');
+      if (codigo === 3 || codigo === 0) {
+        if (url) fallidas.add(url);
+        try {
+          medio.pause();
+          medio.removeAttribute('src');
+          medio.load(); // desmonta el pipeline; sin esto el bucle sigue
+        } catch (e) { /* el medio ya no está */ }
+        anotar('medio con fallo de decodificación (código ' + codigo + '): pipeline detenido');
+      } else {
+        anotar('medio con aviso/error de transporte o red (código ' + codigo + ')');
+      }
     }, true);
   }
 
@@ -495,6 +537,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
     const medio = medioDe(nodo);
     if (!medio) return;
     vigilarFallo(medio);
+    vigilarVisibilidad(medio);
     const url = String(urlDe(nodo) || '');
     if (candidatos.has(url)) aplazarPrecarga(medio);
   }
@@ -560,6 +603,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
   HTMLMediaElement.prototype.play = function () {
     const medio = this;
     vigilarFallo(medio);
+    vigilarVisibilidad(medio);
     if (descriptorPrecarga && descriptorPrecarga.set)
       descriptorPrecarga.set.call(medio, 'auto');
     const nodo = portador(medio);
@@ -581,6 +625,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
   document.addEventListener('play', function (evento) {
     const medio = evento.target;
     if (!(medio instanceof HTMLMediaElement)) return;
+    vigilarVisibilidad(medio);
     const nodo = portador(medio);
     if (!nodo) return;
     const url = String(urlDe(nodo));
@@ -600,7 +645,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
   URL.createObjectURL = function (objeto) {
     const url = crearUrl.call(this, objeto);
     if (objeto instanceof Blob && (objeto.type ? esMedio.test(objeto.type) : true))
-      candidatos.set(url, { blob: objeto, arreglada: null, trabajo: null });
+      registrarCandidato(url, { blob: objeto, arreglada: null, trabajo: null });
     return url;
   };
 
