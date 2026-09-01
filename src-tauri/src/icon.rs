@@ -79,12 +79,10 @@ pub fn set_app_icon(app: AppHandle, name: String) -> Result<(), String> {
     if load(&app, &name).is_none() {
         return Err(format!("Icono desconocido: {name}"));
     }
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    crate::config::mutate(&app, |cfg| {
         cfg.icon = name;
-        crate::config::save(&app, &cfg);
-    }
+        Ok(())
+    })?;
     apply(&app);
     Ok(())
 }

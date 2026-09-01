@@ -62,7 +62,7 @@ fn account_url() -> tauri::Url {
 /// Limita las navegaciones principales de una vista de cuenta. Los recursos
 /// internos de WhatsApp siguen pudiendo venir de sus CDNs; lo que se impide es
 /// convertir una vista con cámara/micrófono concedidos en un navegador general.
-fn account_navigation_allowed(url: &tauri::Url) -> bool {
+pub(crate) fn account_navigation_allowed(url: &tauri::Url) -> bool {
     if url.as_str() == "about:blank" {
         return true;
     }
@@ -126,12 +126,21 @@ fn unread_count_from_title(title: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Punto de entrada del esquema `wrusp://` registrado en `main`.
-pub fn handle_uri(app: &AppHandle, uri: &tauri::http::Uri) {
+/// Punto de entrada del esquema `wrusp://` registrado en `main`. `origin` es la
+/// etiqueta de la webview que emitió la orden, y la pone el motor, no la
+/// página: es lo único del mensaje que la página no puede falsear.
+pub fn handle_uri(app: &AppHandle, origin: &str, uri: &tauri::http::Uri) {
     match uri.to_string().parse::<tauri::Url>() {
-        Ok(url) => handle_command(app, &url),
+        Ok(url) => handle_command(app, origin, &url),
         Err(err) => eprintln!("wrusp: URL de orden ilegible ({err})"),
     }
+}
+
+/// ¿Puede la vista `origin` actualizar el contador de la cuenta `id`? Solo la
+/// propia: sin esto, cualquier vista podía atribuir no leídos —y con ellos una
+/// notificación— a otra cuenta.
+fn unread_order_authorized(origin: &str, id: &str) -> bool {
+    origin == view_label(id)
 }
 
 /// Maneja las órdenes que las vistas envían como `wrusp://…`.
@@ -140,8 +149,9 @@ pub fn handle_uri(app: &AppHandle, uri: &tauri::http::Uri) {
 /// les concede IPC de Tauri (ver `capabilities/default.json`). La acción viaja
 /// como **host** (`wrusp://switch/<id>`) y los datos largos, como los de una
 /// notificación, en la cadena de consulta.
-fn handle_command(app: &AppHandle, url: &tauri::Url) {
+fn handle_command(app: &AppHandle, origin: &str, url: &tauri::Url) {
     let app = app.clone();
+    let origin = origin.to_string();
     let url = url.clone();
     // La orden llega desde el hilo del webview; tocar ventanas exige el
     // principal.
@@ -192,10 +202,16 @@ fn handle_command(app: &AppHandle, url: &tauri::Url) {
                     crate::filedrop::pegar(&app, &etiqueta);
                 }
             }
-            // `unread/<id>/<n>`: lo emite el observador del título.
+            // `unread/<id>/<n>`: lo emite el observador del título. El id
+            // viaja en la orden, pero manda la vista emisora: solo puede
+            // actualizar su propio contador.
             "unread" => {
                 if let Some((id, count)) = arg.split_once('/') {
-                    set_unread(&app, id, count.parse().unwrap_or(0));
+                    if unread_order_authorized(&origin, id) {
+                        set_unread(&app, id, count.parse().unwrap_or(0));
+                    } else {
+                        eprintln!("wrusp: orden unread de {origin} atribuida a {id}: rechazada");
+                    }
                 }
             }
             other => eprintln!("wrusp: orden desconocida de la barra: {other}"),
@@ -224,7 +240,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let settings = WebviewBuilder::new(SETTINGS_VIEW, WebviewUrl::App("index.html".into()))
         .on_navigation(move |url| {
             if url.scheme() == "wrusp" {
-                handle_command(&handle, url);
+                handle_command(&handle, SETTINGS_VIEW, url);
                 return false;
             }
             true
@@ -295,13 +311,15 @@ fn apply_zoom_step(app: &AppHandle, step: &str) {
         "out" => (current - ZOOM_STEP).max(ZOOM_MIN),
         _ => 1.0,
     };
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    let guardado = crate::config::mutate(app, |cfg| {
         if let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == active) {
             account.zoom = zoom;
         }
-        crate::config::save(app, &cfg);
+        Ok(())
+    });
+    if let Err(err) = guardado {
+        eprintln!("wrusp: el zoom no se pudo guardar: {err}");
+        return;
     }
     if let Some(view) = app.get_webview(&view_label(&active)) {
         let _ = view.set_zoom(zoom);
@@ -572,10 +590,11 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
     let mode = app.state::<ConfigState>().0.lock().unwrap().theme;
     let handle = app.clone();
 
+    let origen = view_label(&account.id);
     let builder = WebviewBuilder::new(view_label(&account.id), WebviewUrl::External(account_url()))
         .on_navigation(move |url| {
             if url.scheme() == "wrusp" {
-                handle_command(&handle, url);
+                handle_command(&handle, &origen, url);
                 return false;
             }
             let allowed = account_navigation_allowed(url);
@@ -635,9 +654,17 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
 
     // Aislamiento de sesión por cuenta: en Linux, Tauri crea un `WebContext` de
     // WebKitGTK distinto por cada directorio de datos, así que cookies,
-    // localStorage e IndexedDB quedan separados.
+    // localStorage e IndexedDB quedan separados. La ruta pasa por la misma
+    // validación de confinamiento que el borrado: una cuenta con id inválido no
+    // debe abrir vista (ni caer a un perfil compartido).
     let builder = {
-        let profile = crate::config::profiles_dir(app).join(&account.id);
+        let profile = match crate::config::profile_path(app, &account.id) {
+            Ok(profile) => profile,
+            Err(err) => {
+                eprintln!("wrusp: no se abre la cuenta {:?}: {err}", account.name);
+                return Ok(());
+            }
+        };
         let _ = std::fs::create_dir_all(&profile);
         builder.data_directory(profile)
     };
@@ -804,7 +831,19 @@ pub fn sync_bounds(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{account_navigation_allowed, notification_is_redundant, unread_count_from_title};
+    use super::{
+        account_navigation_allowed, notification_is_redundant, unread_count_from_title,
+        unread_order_authorized,
+    };
+
+    #[test]
+    fn una_vista_solo_actualiza_su_propio_contador() {
+        assert!(unread_order_authorized("account-personal", "personal"));
+
+        assert!(!unread_order_authorized("account-trabajo", "personal"));
+        assert!(!unread_order_authorized("settings", "personal"));
+        assert!(!unread_order_authorized("personal", "personal")); // sin prefijo
+    }
 
     #[test]
     fn notifications_are_only_redundant_for_the_focused_account() {

@@ -6,7 +6,12 @@
 
 use crate::runtime::AppHandle;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::Manager;
 
 fn default_zoom() -> f64 {
@@ -216,31 +221,28 @@ fn validate_dir(path: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn set_download_dir(app: AppHandle, path: String) -> Result<(), String> {
     validate_dir(&path)?;
-    let state = app.state::<ConfigState>();
-    let mut cfg = state.0.lock().unwrap();
-    cfg.download_dir = path;
-    save(&app, &cfg);
-    Ok(())
+    mutate(&app, |cfg| {
+        cfg.download_dir = path;
+        Ok(())
+    })
 }
 
 #[tauri::command]
 pub fn set_temp_dir(app: AppHandle, path: String) -> Result<(), String> {
     validate_dir(&path)?;
-    let state = app.state::<ConfigState>();
-    let mut cfg = state.0.lock().unwrap();
-    cfg.temp_dir = path;
-    save(&app, &cfg);
-    Ok(())
+    mutate(&app, |cfg| {
+        cfg.temp_dir = path;
+        Ok(())
+    })
 }
 
 #[tauri::command]
 pub fn set_log_dir(app: AppHandle, path: String) -> Result<(), String> {
     validate_dir(&path)?;
-    let state = app.state::<ConfigState>();
-    let mut cfg = state.0.lock().unwrap();
-    cfg.log_dir = path;
-    save(&app, &cfg);
-    Ok(())
+    mutate(&app, |cfg| {
+        cfg.log_dir = path;
+        Ok(())
+    })
 }
 
 /// Abre la carpeta de registros en el gestor de ficheros.
@@ -307,19 +309,30 @@ pub fn set_autostart_enabled(_enabled: bool) {}
 
 #[tauri::command]
 pub fn set_toggle(app: AppHandle, name: String, enabled: bool) -> Result<(), String> {
-    let state = app.state::<ConfigState>();
-    let mut cfg = state.0.lock().unwrap();
-    match name.as_str() {
-        "closeToTray" => cfg.close_to_tray = enabled,
-        "notifications" => cfg.notifications = enabled,
-        "notificationPrivacy" => cfg.notification_privacy = enabled,
+    mutate(&app, |cfg| match name.as_str() {
+        "closeToTray" => {
+            cfg.close_to_tray = enabled;
+            Ok(())
+        }
+        "notifications" => {
+            cfg.notifications = enabled;
+            Ok(())
+        }
+        "notificationPrivacy" => {
+            cfg.notification_privacy = enabled;
+            Ok(())
+        }
         "autostart" => {
             cfg.autostart = enabled;
-            set_autostart_enabled(enabled);
+            Ok(())
         }
-        other => return Err(format!("Ajuste desconocido: {other}")),
+        other => Err(format!("Ajuste desconocido: {other}")),
+    })?;
+    // El fichero de autoarranque se toca solo cuando el ajuste ya quedó
+    // persistido; si el guardado falla, escritorio y configuración no divergen.
+    if name == "autostart" {
+        set_autostart_enabled(enabled);
     }
-    save(&app, &cfg);
     Ok(())
 }
 
@@ -455,11 +468,38 @@ pub fn clear_gstreamer_cache() -> Result<(), String> {
     Ok(())
 }
 
-/// Evita pisar un fichero ya descargado: `foto.jpg` → `foto (2).jpg`.
-pub fn unique_path(path: PathBuf) -> PathBuf {
-    if !path.exists() {
-        return path;
+/// Resultado de intentar reservar un destino en exclusiva.
+enum Reserva {
+    /// El fichero se creó vacío: el nombre es nuestro.
+    Hecha,
+    /// Ya existe: probar el siguiente.
+    Ocupada,
+    /// El sistema de ficheros no deja reservar (permisos, carpeta ausente…):
+    /// no tiene sentido seguir probando nombres.
+    Imposible,
+}
+
+fn reservar(path: &Path) -> Reserva {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Reserva::Hecha,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Reserva::Ocupada,
+        Err(_) => Reserva::Imposible,
     }
+}
+
+/// Evita pisar un fichero ya descargado: `foto.jpg` → `foto (2).jpg`.
+///
+/// El nombre no se elige mirando si existe —dos descargas a la vez pasaban
+/// ambas esa comprobación y acababan en el mismo fichero—: se **reserva**
+/// creándolo vacío en exclusiva (`create_new`), que es una sola operación
+/// atómica del sistema de ficheros. La descarga escribe después encima de su
+/// reserva. Y nunca se vuelve a una ruta ocupada: si se agotan los sufijos
+/// numerados, el último recurso es un sufijo de reloj, no pisar la original.
+pub fn unique_path(path: PathBuf) -> PathBuf {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -467,14 +507,29 @@ pub fn unique_path(path: PathBuf) -> PathBuf {
     let ext = path
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()));
+    let ext = ext.as_deref().unwrap_or("");
     let parent = path.parent().map(PathBuf::from).unwrap_or_default();
+
+    match reservar(&path) {
+        Reserva::Hecha => return path,
+        Reserva::Imposible => return path, // el error real saldrá al escribir
+        Reserva::Ocupada => {}
+    }
     for n in 2..1000 {
-        let candidate = parent.join(format!("{stem} ({n}){}", ext.as_deref().unwrap_or("")));
-        if !candidate.exists() {
-            return candidate;
+        let candidate = parent.join(format!("{stem} ({n}){ext}"));
+        match reservar(&candidate) {
+            Reserva::Hecha => return candidate,
+            Reserva::Imposible => return candidate,
+            Reserva::Ocupada => {}
         }
     }
-    path
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let candidate = parent.join(format!("{stem} ({nanos}){ext}"));
+    let _ = reservar(&candidate);
+    candidate
 }
 
 /// Datos del «Acerca de».
@@ -610,25 +665,149 @@ pub fn profiles_dir(app: &AppHandle) -> PathBuf {
 }
 
 pub fn load(app: &AppHandle) -> AppConfig {
-    config_path(app)
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+    let Some(path) = config_path(app) else {
+        return AppConfig::default();
+    };
+    let mut cfg = load_config_file(&path);
+    sanitize_accounts(&mut cfg.accounts);
+    cfg
 }
 
-pub fn save(app: &AppHandle, cfg: &AppConfig) {
-    let Some(path) = config_path(app) else { return };
-    if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
-    }
-    match serde_json::to_string_pretty(cfg) {
-        Ok(json) => {
-            if let Err(err) = fs::write(&path, json) {
-                eprintln!("wrusp: no se pudo guardar la configuración: {err}");
+/// Lee la configuración del disco. Un fichero ausente es la primera ejecución;
+/// uno ilegible se aparta a `config.json.corrupto` en vez de tratarlo como
+/// vacío: es la única copia de las cuentas del usuario, y el siguiente guardado
+/// la pisaría sin que nadie se enterase.
+fn load_config_file(path: &Path) -> AppConfig {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return AppConfig::default(),
+    };
+    match serde_json::from_str(&raw) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            let rescate = unique_path(path.with_extension("json.corrupto"));
+            match fs::rename(path, &rescate) {
+                Ok(()) => eprintln!(
+                    "wrusp: config.json ilegible ({err}); se conserva en {} y se arranca con la configuración por defecto",
+                    rescate.display()
+                ),
+                Err(e) => eprintln!(
+                    "wrusp: config.json ilegible ({err}) y no se pudo apartar ({e}); se arranca con la configuración por defecto"
+                ),
             }
+            AppConfig::default()
         }
-        Err(err) => eprintln!("wrusp: no se pudo serializar la configuración: {err}"),
     }
+}
+
+/// Descarta cuentas cuyo id no sea un UUID canónico o repita uno anterior.
+///
+/// El id nombra el directorio del perfil (`profiles/<id>`), así que un id
+/// manipulado con `../` o una ruta absoluta podría sacar el borrado de una
+/// cuenta fuera de `profiles/`; los duplicados romperían el aislamiento de
+/// sesiones. La app siempre generó UUIDs, de modo que aquí solo cae lo que
+/// alguien haya editado a mano en config.json.
+fn sanitize_accounts(accounts: &mut Vec<Account>) {
+    let mut vistos = std::collections::HashSet::new();
+    accounts.retain(|a| {
+        if !valid_account_id(&a.id) {
+            eprintln!(
+                "wrusp: cuenta {:?} descartada: su id {:?} no es un UUID válido",
+                a.name, a.id
+            );
+            return false;
+        }
+        if !vistos.insert(a.id.clone()) {
+            eprintln!(
+                "wrusp: cuenta {:?} descartada: id {:?} duplicado",
+                a.name, a.id
+            );
+            return false;
+        }
+        true
+    });
+}
+
+/// ¿Es el id un UUID en su forma canónica (minúsculas, con guiones)?
+/// Es la única forma que genera `add_account`, y no contiene separadores de
+/// ruta ni nada que pueda escapar de `profiles/`.
+pub fn valid_account_id(id: &str) -> bool {
+    uuid::Uuid::try_parse(id).is_ok_and(|u| u.as_hyphenated().to_string() == id)
+}
+
+/// Ruta del perfil de una cuenta, validando el id y que el resultado quede
+/// confinado como hijo directo de la raíz de perfiles.
+pub fn profile_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    confined_profile_path(&profiles_dir(app), id)
+}
+
+fn confined_profile_path(root: &Path, id: &str) -> Result<PathBuf, String> {
+    if !valid_account_id(id) {
+        return Err(format!("Identificador de cuenta no válido: {id:?}"));
+    }
+    let path = root.join(id);
+    // Con el id ya validado no puede escapar, pero comprobarlo cuesta poco y
+    // aguanta aunque la validación de arriba cambie algún día.
+    if path.parent() != Some(root) || path.file_name() != Some(std::ffi::OsStr::new(id)) {
+        return Err(format!("Ruta de perfil fuera de profiles/: {id:?}"));
+    }
+    Ok(path)
+}
+
+pub fn save(app: &AppHandle, cfg: &AppConfig) -> Result<(), String> {
+    let path =
+        config_path(app).ok_or_else(|| "No se pudo resolver la carpeta de datos".to_string())?;
+    write_config_atomic(&path, cfg)
+}
+
+/// Escribe la configuración a un temporal del mismo directorio, lo sincroniza
+/// y lo renombra sobre el definitivo. Un cierre a mitad de escritura deja el
+/// `config.json` anterior intacto, nunca uno truncado.
+fn write_config_atomic(path: &Path, cfg: &AppConfig) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(cfg)
+        .map_err(|e| format!("No se pudo serializar la configuración: {e}"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| "Ruta de configuración sin carpeta".to_string())?;
+    fs::create_dir_all(dir).map_err(|e| format!("No se pudo crear la carpeta de datos: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    let escribir = |tmp: &Path| -> io::Result<()> {
+        let mut f = fs::File::create(tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()
+    };
+    escribir(&tmp).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("No se pudo guardar la configuración: {e}")
+    })?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("No se pudo guardar la configuración: {e}")
+    })
+}
+
+/// Aplica una mutación a la configuración y la persiste. Si la mutación o la
+/// escritura fallan, la configuración en memoria vuelve a como estaba: lo que
+/// la UI da por hecho y lo que hay en disco no se separan.
+pub fn mutate<R>(
+    app: &AppHandle,
+    f: impl FnOnce(&mut AppConfig) -> Result<R, String>,
+) -> Result<R, String> {
+    let state = app.state::<ConfigState>();
+    let mut cfg = state.0.lock().unwrap();
+    let backup = cfg.clone();
+    let out = match f(&mut cfg) {
+        Ok(out) => out,
+        Err(err) => {
+            *cfg = backup;
+            return Err(err);
+        }
+    };
+    if let Err(err) = save(app, &cfg) {
+        *cfg = backup;
+        return Err(err);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -670,13 +849,143 @@ mod tests {
         assert_eq!(vuelta.zoom, 1.2);
     }
 
+    /// Carpeta temporal propia de cada test: se ejecutan en paralelo y no
+    /// deben pisarse entre sí.
+    fn carpeta_de_prueba(nombre: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wrusp-test-{nombre}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("crear carpeta de prueba");
+        dir
+    }
+
     #[test]
     fn ruta_unica_no_pisa_ficheros() {
-        let temp = std::env::temp_dir().join("wrusp-test-unique.txt");
-        let _ = fs::write(&temp, b"test");
+        let dir = carpeta_de_prueba("unique");
+        let temp = dir.join("fichero.txt");
+        fs::write(&temp, b"test").unwrap();
         let unica = unique_path(temp.clone());
         assert_ne!(unica, temp);
         assert!(unica.display().to_string().contains("(2)"));
-        let _ = fs::remove_file(temp);
+        assert_eq!(
+            fs::read(&temp).unwrap(),
+            b"test",
+            "el original queda intacto"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn descargas_concurrentes_reciben_destinos_distintos() {
+        let dir = carpeta_de_prueba("unique-concurrente");
+        fs::write(dir.join("descarga.pdf"), b"contenido previo").unwrap();
+
+        let mut hilos = Vec::new();
+        for _ in 0..8 {
+            let destino = dir.join("descarga.pdf");
+            hilos.push(std::thread::spawn(move || unique_path(destino)));
+        }
+        let rutas: Vec<PathBuf> = hilos.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let unicas: std::collections::HashSet<&PathBuf> = rutas.iter().collect();
+        assert_eq!(
+            unicas.len(),
+            rutas.len(),
+            "cada descarga con su ruta: {rutas:?}"
+        );
+        assert!(!rutas.contains(&dir.join("descarga.pdf")));
+        assert_eq!(
+            fs::read(dir.join("descarga.pdf")).unwrap(),
+            b"contenido previo",
+            "nadie pisa el fichero preexistente"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ids_de_cuenta_solo_uuid_canonico() {
+        assert!(valid_account_id("3f0a2b9c-1234-4abc-8def-0123456789ab"));
+
+        assert!(!valid_account_id(""));
+        assert!(!valid_account_id("../otro"));
+        assert!(!valid_account_id("/etc/passwd"));
+        assert!(!valid_account_id("3F0A2B9C-1234-4ABC-8DEF-0123456789AB")); // mayúsculas
+        assert!(!valid_account_id("{3f0a2b9c-1234-4abc-8def-0123456789ab}")); // con llaves
+        assert!(!valid_account_id("3f0a2b9c12344abc8def0123456789ab")); // sin guiones
+    }
+
+    #[test]
+    fn el_saneado_descarta_ids_invalidos_y_duplicados() {
+        let cuenta = |id: &str, name: &str| Account {
+            id: id.into(),
+            name: name.into(),
+            zoom: 1.0,
+            color: None,
+            muted: false,
+        };
+        let valida = "3f0a2b9c-1234-4abc-8def-0123456789ab";
+        let mut accounts = vec![
+            cuenta(valida, "buena"),
+            cuenta(valida, "duplicada"),
+            cuenta("../fuera", "escapista"),
+            cuenta("/etc", "absoluta"),
+            cuenta("", "vacía"),
+        ];
+        sanitize_accounts(&mut accounts);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].name, "buena");
+    }
+
+    #[test]
+    fn la_ruta_de_perfil_queda_confinada() {
+        let root = carpeta_de_prueba("perfiles");
+        let id = "3f0a2b9c-1234-4abc-8def-0123456789ab";
+
+        let ruta = confined_profile_path(&root, id).expect("UUID válido");
+        assert_eq!(ruta, root.join(id));
+        assert_eq!(ruta.parent(), Some(root.as_path()));
+
+        assert!(confined_profile_path(&root, "../fuera").is_err());
+        assert!(confined_profile_path(&root, "/etc/passwd").is_err());
+        assert!(confined_profile_path(&root, "").is_err());
+        assert!(confined_profile_path(&root, "no-un-uuid").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn guardado_atomico_y_recarga() {
+        let dir = carpeta_de_prueba("guardado");
+        let path = dir.join("config.json");
+        let cfg = AppConfig {
+            download_dir: "/tmp/descargas".into(),
+            ..Default::default()
+        };
+
+        write_config_atomic(&path, &cfg).expect("guardar");
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "sin temporal residual"
+        );
+
+        let releida = load_config_file(&path);
+        assert_eq!(releida.download_dir, "/tmp/descargas");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn json_corrupto_se_aparta_en_vez_de_perderse() {
+        let dir = carpeta_de_prueba("corrupto");
+        let path = dir.join("config.json");
+        fs::write(&path, "{\"accounts\": [").unwrap(); // truncado
+
+        let cfg = load_config_file(&path);
+        assert!(cfg.accounts.is_empty(), "arranca con defaults");
+        assert!(!path.exists(), "el corrupto ya no está en su sitio");
+        let rescate = dir.join("config.json.corrupto");
+        assert_eq!(
+            fs::read_to_string(&rescate).unwrap(),
+            "{\"accounts\": [",
+            "…porque se apartó entero para poder recuperarlo"
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }

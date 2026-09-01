@@ -1,0 +1,6 @@
+# Documentación interna de trabajo (no se publica)
+memoria/
+
+# Artefactos de compilación
+target/
+src-tauri/gen/schemas/

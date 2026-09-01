@@ -42,6 +42,22 @@ fn notification_origins() -> Vec<webkit2gtk::SecurityOrigin> {
     origins
 }
 
+/// ¿Está la vista en un origen al que se le pueden conceder permisos? Es la
+/// misma política que limita la navegación (`shell::account_navigation_allowed`):
+/// WhatsApp y sus dominios de infraestructura, más el servidor de pruebas en
+/// depuración. Sin URI conocido no se concede nada.
+#[cfg(target_os = "linux")]
+fn vista_en_origen_permitido(webview: &webkit2gtk::WebView) -> bool {
+    use webkit2gtk::WebViewExt;
+
+    let Some(uri) = webview.uri() else {
+        return false;
+    };
+    uri.as_str()
+        .parse::<tauri::Url>()
+        .is_ok_and(|url| crate::shell::account_navigation_allowed(&url))
+}
+
 /// Contesta la consulta con la que WebKitGTK resuelve `Notification.permission`.
 ///
 /// Desde WebKitGTK 2.40 el estado de un permiso no sale solo de
@@ -316,7 +332,7 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
         pedir_proceso_web_nuevo(&native);
 
         // ── Resto de permisos ───────────────────────────────────
-        native.connect_permission_request(|_, request| {
+        native.connect_permission_request(|webview, request| {
             #[cfg(debug_assertions)]
             println!(
                 "wrusp: permiso solicitado: {}",
@@ -328,7 +344,19 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             if request.is::<UserMediaPermissionRequest>()
                 || request.is::<NotificationPermissionRequest>()
             {
-                request.allow();
+                // Solo si la vista sigue en un origen de WhatsApp: la
+                // navegación ya está restringida a esos orígenes, pero si
+                // algún día un enlace la sacara de ahí, la página de destino
+                // no debe heredar cámara ni micrófono.
+                if vista_en_origen_permitido(webview) {
+                    request.allow();
+                } else {
+                    eprintln!(
+                        "wrusp: permiso denegado: la vista está en {}",
+                        webview.uri().map(|u| u.to_string()).unwrap_or_default()
+                    );
+                    request.deny();
+                }
                 return true;
             }
             false

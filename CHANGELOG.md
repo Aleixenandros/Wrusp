@@ -4,6 +4,20 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.5] — 2026-09-01
+
+### Seguridad
+
+- **Los identificadores de cuenta quedan blindados.** El id de cada cuenta nombra su carpeta de perfil (`profiles/<id>`), y hasta ahora se aceptaba tal cual viniera en `config.json`: un id manipulado con `../` o una ruta absoluta podía sacar el borrado de una cuenta fuera de `profiles/` y llevarse por delante un directorio ajeno. Ahora el id se valida como UUID canónico en todos los límites —al cargar la configuración se descartan, con aviso en el registro, las entradas inválidas o duplicadas—, la ruta del perfil se comprueba confinada como hijo directo de `profiles/` antes de crearla o borrarla, y borrar una cuenta inexistente devuelve error en vez de aparentar éxito.
+- **Una vista ya no puede hablar en nombre de otra.** Las órdenes del canal `wrusp://` viajaban con el id de cuenta dentro del mensaje y se creían sin más: cualquier vista podía atribuir no leídos —y con ellos una notificación— a otra cuenta. El manejador recibe ahora la etiqueta de la webview emisora, que la pone el motor y la página no puede falsear, y la orden del contador solo puede actualizar la cuenta que la emite.
+- **Cámara y micrófono solo para WhatsApp.** Antes de conceder un permiso de captura o notificaciones se comprueba que la vista siga en un origen de WhatsApp, con la misma política que ya limita la navegación: si algún día un enlace sacara la vista de ahí, la página de destino no heredará un canal con cámara y micrófono concedidos.
+
+### Corregido
+
+- **La configuración se guarda de forma atómica y los fallos ya no se tragan.** `config.json` se escribía directamente: un cierre a mitad de escritura podía dejarlo truncado, el arranque siguiente lo interpretaba en silencio como configuración vacía y las cuentas «desaparecían». Ahora se escribe a un temporal que se sincroniza y se renombra encima del definitivo —nunca hay un estado a medias—, un fichero ilegible se aparta a `config.json.corrupto` para poder recuperarlo en vez de dejarlo morir pisado, y si una mutación no puede persistirse se revierte en memoria y el error llega a quien la pidió, en vez de aparentar que todo fue bien.
+- **Dos descargas simultáneas ya no pueden pisarse.** El nombre alternativo (`foto (2).jpg`) se elegía mirando si existía, y dos descargas a la vez podían pasar ambas esa comprobación y acabar en el mismo fichero; tras 999 colisiones, además, se volvía a la ruta original ocupada. Ahora el destino se reserva creándolo en exclusiva —una sola operación atómica del sistema de ficheros— y nunca se devuelve una ruta ocupada.
+- **El `.gitignore` pasa a estar versionado.** Se ignoraba a sí mismo, así que quien clonaba el repositorio no recibía las reglas de exclusión de artefactos de compilación.
+
 ## [0.4.4] — 2026-08-31
 
 ### Corregido

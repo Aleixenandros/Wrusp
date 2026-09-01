@@ -27,12 +27,11 @@ pub fn add_account(app: AppHandle, name: String) -> Result<Account, String> {
         color: None,
         muted: false,
     };
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
-        cfg.accounts.push(account.clone());
-        crate::config::save(&app, &cfg);
-    }
+    let cuenta = account.clone();
+    crate::config::mutate(&app, move |cfg| {
+        cfg.accounts.push(cuenta);
+        Ok(())
+    })?;
     tray::rebuild_menu(&app);
     shell::show_account(&app, &account.id).map_err(|e| e.to_string())?;
     Ok(account)
@@ -44,15 +43,13 @@ pub fn rename_account(app: AppHandle, id: String, name: String) -> Result<(), St
     if name.is_empty() {
         return Err("El nombre no puede estar vacío".into());
     }
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    crate::config::mutate(&app, |cfg| {
         let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == id) else {
             return Err("Cuenta no encontrada".into());
         };
         account.name = name;
-        crate::config::save(&app, &cfg);
-    }
+        Ok(())
+    })?;
     tray::rebuild_menu(&app);
     shell::refresh_rails(&app);
     Ok(())
@@ -63,39 +60,33 @@ pub fn set_account_color(app: AppHandle, id: String, color: Option<String>) -> R
     let color = color
         .map(|c| c.trim().to_string())
         .filter(|c| !c.is_empty());
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    crate::config::mutate(&app, |cfg| {
         let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == id) else {
             return Err("Cuenta no encontrada".into());
         };
         account.color = color;
-        crate::config::save(&app, &cfg);
-    }
+        Ok(())
+    })?;
     shell::refresh_rails(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub fn set_account_muted(app: AppHandle, id: String, muted: bool) -> Result<(), String> {
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    crate::config::mutate(&app, |cfg| {
         let Some(account) = cfg.accounts.iter_mut().find(|a| a.id == id) else {
             return Err("Cuenta no encontrada".into());
         };
         account.muted = muted;
-        crate::config::save(&app, &cfg);
-    }
+        Ok(())
+    })?;
     shell::refresh_rails(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub fn reorder_accounts(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    crate::config::mutate(&app, |cfg| {
         let mut reordered = Vec::with_capacity(cfg.accounts.len());
         for id in &ids {
             if let Some(acc) = cfg.accounts.iter().find(|a| &a.id == id).cloned() {
@@ -108,8 +99,8 @@ pub fn reorder_accounts(app: AppHandle, ids: Vec<String>) -> Result<(), String> 
             }
         }
         cfg.accounts = reordered;
-        crate::config::save(&app, &cfg);
-    }
+        Ok(())
+    })?;
     tray::rebuild_menu(&app);
     shell::refresh_rails(&app);
     Ok(())
@@ -117,13 +108,24 @@ pub fn reorder_accounts(app: AppHandle, ids: Vec<String>) -> Result<(), String> 
 
 #[tauri::command]
 pub fn remove_account(app: AppHandle, id: String) -> Result<(), String> {
-    shell::close_account_view(&app, &id);
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+    // La ruta del perfil se resuelve ANTES de tocar nada: valida que el id sea
+    // un UUID y que el destino del borrado quede confinado bajo `profiles/`.
+    // Un config.json manipulado con `../` no debe poder sacar el
+    // `remove_dir_all` de ahí.
+    let profile = crate::config::profile_path(&app, &id)?;
+
+    crate::config::mutate(&app, |cfg| {
+        let antes = cfg.accounts.len();
         cfg.accounts.retain(|a| a.id != id);
-        crate::config::save(&app, &cfg);
-    }
+        if cfg.accounts.len() == antes {
+            return Err("Cuenta no encontrada".into());
+        }
+        Ok(())
+    })?;
+
+    // Solo con la baja ya persistida se destruye la vista y el perfil; si el
+    // guardado falló, la cuenta sigue entera y no se ha perdido nada.
+    shell::close_account_view(&app, &id);
     tray::rebuild_menu(&app);
 
     // Si la cuenta borrada era la vista activa, no queda nada que mostrar.
@@ -136,7 +138,6 @@ pub fn remove_account(app: AppHandle, id: String) -> Result<(), String> {
     // Borrar el perfil elimina la sesión de WhatsApp (equivale a cerrar sesión
     // en ese dispositivo). Se hace con un pequeño retraso para dar tiempo al
     // webview destruido a soltar sus ficheros.
-    let profile = crate::config::profiles_dir(&app).join(&id);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(800));
         if let Err(err) = std::fs::remove_dir_all(&profile) {

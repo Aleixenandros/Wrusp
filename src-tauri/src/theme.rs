@@ -57,14 +57,13 @@ pub fn get_theme(state: tauri::State<'_, ConfigState>) -> ThemeMode {
 }
 
 #[tauri::command]
-pub fn set_theme(app: AppHandle, theme: ThemeMode) {
-    {
-        let state = app.state::<ConfigState>();
-        let mut cfg = state.0.lock().unwrap();
+pub fn set_theme(app: AppHandle, theme: ThemeMode) -> Result<(), String> {
+    crate::config::mutate(&app, |cfg| {
         cfg.theme = theme;
-        crate::config::save(&app, &cfg);
-    }
+        Ok(())
+    })?;
     apply_theme(&app);
+    Ok(())
 }
 
 /// Aplica el tema actual a la ventana y a las vistas de WhatsApp abiertas.

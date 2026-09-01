@@ -110,7 +110,10 @@ fn main() {
         // mismo instante). Sigue sin conceder IPC a whatsapp.com: aquí solo se
         // aceptan las órdenes conocidas de `shell`.
         .register_uri_scheme_protocol("wrusp", |ctx, request| {
-            shell::handle_uri(ctx.app_handle(), request.uri());
+            // La etiqueta de la webview emisora viaja con la petición y la pone
+            // el motor: es la identidad en la que se apoya la autorización de
+            // las órdenes (una vista no puede hablar en nombre de otra).
+            shell::handle_uri(ctx.app_handle(), ctx.webview_label(), request.uri());
             tauri::http::Response::builder()
                 .status(204)
                 // La página se sirve desde https://web.whatsapp.com, así que
