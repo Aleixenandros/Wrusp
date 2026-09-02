@@ -86,7 +86,7 @@ pub const SCRIPT: &str = r#"(function () {
 
 /// Decodifica base64 estándar; devuelve `None` si aparece un carácter que no
 /// pertenece al alfabeto.
-fn desde_base64(texto: &str) -> Option<Vec<u8>> {
+pub(crate) fn desde_base64(texto: &str) -> Option<Vec<u8>> {
     const ALFABETO: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut salida = Vec::with_capacity(texto.len() / 4 * 3);
     let mut acumulado: u32 = 0;

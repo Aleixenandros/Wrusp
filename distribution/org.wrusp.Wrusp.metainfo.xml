@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.8" date="2026-09-03">
+      <description>
+        <p>Ningún vídeo abre su pipeline hasta que se reproduce, también los servidos por el service worker de WhatsApp. El registro anota los códecs de cada vídeo que falla y, opcionalmente, guarda el fichero para analizarlo.</p>
+      </description>
+    </release>
     <release version="0.4.7" date="2026-09-03">
       <description>
         <p>Los chats con GIF dejan de clavar la aplicación: se corrige un bucle de pausa y reproducción que la 0.4.6 destapó al quitar el tope de vídeos candidatos. Cada vídeo que falla anota ahora por qué no se puede reparar.</p>

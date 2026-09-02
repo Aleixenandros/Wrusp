@@ -4,6 +4,18 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.8] — 2026-09-03
+
+### Corregido
+
+- **Ningún medio abre su pipeline hasta que se reproduce.** La precarga se aplazaba solo a los blobs que Wrusp conocía; el registro de la 0.4.7 mostró que WhatsApp pone además vídeos con fuente `https:` (servidos por su service worker), y cada uno levantaba un pipeline de GStreamer nada más aparecer en el chat. Ahora se aplaza para cualquier fuente `blob:` o `https:`, y se devuelve al reproducir. Menos memoria y menos CPU en chats con muchos vídeos.
+
+### Añadido
+
+- **El registro dice qué códecs trae cada vídeo que falla**: marca del contenedor, entradas de códec (`avc1`, `hvc1`, `mp4a`…) y, para H.264, perfil y nivel. Para las fuentes remotas, además, origen y ruta, y el resultado de una petición de rango como la que hace el motor: estado HTTP, tipo de contenido, `Content-Range` y códecs de lo recibido. Es lo que faltaba para distinguir un códec ausente de un servicio que no contesta.
+- **Volcado a disco de los medios que fallan**, apagado por defecto: con `WRUSP_GUARDAR_MEDIOS_FALLIDOS=1` (o una ruta de carpeta) en el entorno, los blobs que fallan se guardan en `/tmp/wrusp-medios-fallidos/` para analizarlos con `gst-discoverer-1.0` o `ffprobe`. Documentado en el README.
+- **`WRUSP_BANCO_VCODEC` en `banco_faststart`** para fabricar el vídeo de prueba con otro códec. Medido con él: H.264 (baseline y high), HEVC y VP9 se reproducen como `blob:` en WebKitGTK 2.52.5; HEVC va por el decodificador VA-API sin problema y VP9 **solo** va por hardware, así que la rebaja de VA-API sigue limitada a H.264.
+
 ## [0.4.7] — 2026-09-03
 
 ### Corregido

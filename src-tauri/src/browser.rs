@@ -410,6 +410,79 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return 'sin índice entre las primeras cajas';
   }
 
+  // Códecs declarados en el índice: la marca del `ftyp`, los 4CC de las
+  // entradas `stsd` y, para H.264, perfil y nivel del `avcC`. Solo cabeceras,
+  // y solo cuando un medio ya ha fallado: es lo que permite comparar en el
+  // registro un vídeo que no arranca con los que sí lo hacen en el banco.
+  async function codecsDe(blob) {
+    try {
+      const cuatroDe = (v, i) => String.fromCharCode(v[i], v[i + 1], v[i + 2], v[i + 3]).replace(/[^\x20-\x7e]/g, '?');
+      const cabeza = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+      const marca = cabeza.length >= 12 && cuatroDe(cabeza, 4) === 'ftyp' ? 'ftyp ' + cuatroDe(cabeza, 8) : 'sin ftyp';
+      let pos = 0, moov = null;
+      for (let i = 0; i < MAX_CAJAS && pos + 8 <= blob.size; i++) {
+        const c = new DataView(await blob.slice(pos, pos + 16).arrayBuffer());
+        if (c.byteLength < 8) break;
+        let tam = c.getUint32(0);
+        const tipo = String.fromCharCode(c.getUint8(4), c.getUint8(5), c.getUint8(6), c.getUint8(7));
+        if (tam === 1) { if (c.byteLength < 16) break; tam = Number(c.getBigUint64(8)); }
+        else if (tam === 0) tam = blob.size - pos;
+        if (tam < 8) break;
+        if (tipo === 'moov') { moov = { pos, tam }; break; }
+        pos += tam;
+      }
+      if (!moov || moov.tam > 8 * 1024 * 1024) return marca + ', sin índice legible';
+      const u8 = new Uint8Array(await blob.slice(moov.pos, moov.pos + moov.tam).arrayBuffer());
+      const buscar = (texto, desde) => {
+        const m = Uint8Array.from(texto, (ch) => ch.charCodeAt(0));
+        for (let i = desde; i + 4 <= u8.length; i++)
+          if (u8[i] === m[0] && u8[i + 1] === m[1] && u8[i + 2] === m[2] && u8[i + 3] === m[3]) return i;
+        return -1;
+      };
+      const pistas = [];
+      let i = 0;
+      // `i` apunta al tipo «stsd»: versión y banderas (4), número de entradas
+      // (4), tamaño de la primera entrada (4) y su tipo, o sea, i + 16.
+      while ((i = buscar('stsd', i)) >= 0 && pistas.length < 6) {
+        const entrada = cuatroDe(u8, i + 16);
+        let extra = '';
+        if (entrada === 'avc1' || entrada === 'avc3') {
+          const a = buscar('avcC', i);
+          // configurationVersion (a+4), perfil (a+5), compatibilidad (a+6), nivel (a+7)
+          if (a > 0 && a + 8 <= u8.length) extra = ' perfil ' + u8[a + 5] + ' nivel ' + u8[a + 7];
+        }
+        pistas.push(entrada + extra);
+        i += 4;
+      }
+      return marca + ', ' + (pistas.length ? pistas.join(' + ') : 'sin stsd');
+    } catch (e) {
+      return 'códecs ilegibles';
+    }
+  }
+
+  // Volcado a disco de los medios que fallan, para analizarlos con
+  // `gst-discoverer-1.0` o `ffprobe`. Solo si Wrusp arrancó con
+  // `WRUSP_GUARDAR_MEDIOS_FALLIDOS` (lo sabe la página por
+  // `__wruspGuardarFallos`): Rust pide los bytes por `__wruspLeerFallido`.
+  const fallidosGuardados = new Map(); // id → blob
+  let contadorFallidos = 0;
+  function ofrecerVolcado(blob) {
+    if (!window.__wruspGuardarFallos || !blob || fallidosGuardados.size >= 5) return;
+    const id = 'f' + (++contadorFallidos);
+    fallidosGuardados.set(id, blob);
+    if (window.__wruspOrden) window.__wruspOrden('medio-fallido/' + id);
+  }
+  window.__wruspLeerFallido = async function (id) {
+    const blob = fallidosGuardados.get(id);
+    fallidosGuardados.delete(id);
+    if (!blob || blob.size > 64 * 1024 * 1024) return '';
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bruto = '';
+    for (let i = 0; i < bytes.length; i += 8192)
+      bruto += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    return btoa(bruto);
+  };
+
   // ── Puente con la página ─────────────────────────────────────────────────
 
   const esMedio = /^(video\/|audio\/|application\/mp4|application\/octet-stream)/i;
@@ -602,6 +675,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
         if (definitiva === url) {
           enObras.delete(medio);
           detener(medio, url, 'el blob no se puede reordenar (' + (entrada.motivo || '?') + ')' + detalle + ': pipeline detenido');
+          describirFallido(entrada);
           return;
         }
         anotar('medio con fallo' + detalle + ': se reordena y se reintenta');
@@ -627,7 +701,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // Desmontar el pipeline borra `error`, y sin este rastro no hay forma de
       // saber después qué pasó (el banco lo lee de aquí).
       window.__wruspUltimoFallo = { codigo, url };
-      const esquema = url.slice(0, url.indexOf(':') + 1) || 'sin src';
+      let esquema = url.slice(0, url.indexOf(':') + 1) || 'sin src';
+      if (esquema === 'https:' || esquema === 'http:') {
+        try { const u = new URL(url); esquema = u.origin + u.pathname.slice(0, 48); } catch (e) { /* se queda el esquema */ }
+      }
       const detalle = ' (código ' + codigo + ', red ' + medio.networkState + ', datos ' + medio.readyState
         + ', ' + (!entrada ? 'sin blob candidato, ' + esquema : nodo ? 'blob candidato' : 'blob ya reordenado')
         + (entrada && entrada.blob ? ', ' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') : '')
@@ -644,6 +721,23 @@ pub fn fix_large_mp4_blobs_script() -> String {
       if (nodo && entrada && !entrada.definitiva && !reparados.has(medio)) {
         reparados.add(medio);
         reparar(medio, nodo, url, entrada, seguir, detalle);
+        return;
+      }
+      // Fuente remota: se sondea el principio con una petición de rango, que
+      // es lo mismo que hace el motor, y se anota qué contesta y qué códecs
+      // trae. Si la sirve el service worker de WhatsApp, aquí se ve.
+      if (!entrada && /^https?:/.test(url) && !reparados.has(medio)) {
+        reparados.add(medio);
+        detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
+        fetch(url, { headers: { Range: 'bytes=0-262143' } }).then(async (r) => {
+          const tipo = r.headers.get('content-type') || 'sin content-type';
+          const rango = r.headers.get('content-range') || 'sin content-range';
+          const blob = await r.blob();
+          const motivo = await hayQueReordenar(blob);
+          const codecs = await codecsDe(blob);
+          anotar('sondeo de la fuente remota: HTTP ' + r.status + ', ' + tipo + ', ' + rango + ', ' + Math.round(blob.size / 1024) + ' KiB leídos, ' + (motivo || 'índice al final') + ', ' + codecs);
+          ofrecerVolcado(blob);
+        }).catch((e) => anotar('sondeo de la fuente remota: no se pudo leer (' + ((e && e.message) || e) + ')'));
         return;
       }
       // Un blob que no pasó por nuestro `createObjectURL` (WhatsApp descifra
@@ -667,13 +761,30 @@ pub fn fix_large_mp4_blobs_script() -> String {
         return;
       }
       detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
+      if (entrada && entrada.blob) describirFallido(entrada);
     }, true);
+  }
+
+  // Tras detener: códecs al registro y, si está activado, volcado a disco.
+  function describirFallido(entrada) {
+    if (!entrada || !entrada.blob || entrada.descrito) return;
+    entrada.descrito = true;
+    codecsDe(entrada.blob).then((codecs) => {
+      anotar('códecs del medio detenido: ' + codecs + ' (' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') + ')');
+    });
+    ofrecerVolcado(entrada.blob);
   }
 
   // Antes de que la fuente llegue al elemento: si es uno de nuestros blobs,
   // se aplaza su precarga para que el motor no arranque nada todavía.
+  // Cualquier fuente remota o de blob, no solo los candidatos: el registro de
+  // la 0.4.7 enseñó que WhatsApp también pone vídeos con fuente `https:`
+  // (servidos por su service worker) y cada uno levantaba su pipeline nada
+  // más aparecer en el chat.
+  const conFuente = (valor) => /^(blob:|https?:)/.test(String(valor || ''));
+
   function prepararNodo(nodo, valor) {
-    if (!candidatos.has(String(valor))) return;
+    if (!conFuente(valor)) return;
     const medio = medioDe(nodo);
     if (medio) aplazarPrecarga(medio);
   }
@@ -683,8 +794,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (!medio) return;
     vigilarFallo(medio);
     vigilarVisibilidad(medio);
-    const url = String(urlDe(nodo) || '');
-    if (candidatos.has(url)) aplazarPrecarga(medio);
+    if (conFuente(urlDe(nodo))) aplazarPrecarga(medio);
   }
 
   // Deja lista la URL definitiva del blob: la arreglada si hacía falta

@@ -11,6 +11,7 @@ mod badge;
 mod browser;
 mod clipboard;
 mod config;
+mod diagnostico;
 mod filedrop;
 mod icon;
 mod logs;
@@ -39,6 +40,12 @@ use tauri::{Manager, RunEvent, WindowEvent};
 /// El decodificador por hardware gana siempre porque su rango es superior al
 /// del de software (257 frente a 256), así que se le baja a cero. Comprobado
 /// que con eso `decodebin` pasa de `vah264dec` a `avdec_h264`.
+///
+/// Solo H.264. Se midió en el banco (03-09-2026, `WRUSP_BANCO_VCODEC`) qué
+/// pasa con el resto: HEVC se reproduce por `vah265dec` sin problema, y VP9
+/// **solo** se reproduce por hardware, el decodificador de software falla con
+/// error de decodificación. Rebajar todos los VA-API «por coherencia» habría
+/// roto el VP9.
 ///
 /// Si el usuario ya trae su propia preferencia en el entorno, se respeta: puede
 /// querer justo lo contrario.

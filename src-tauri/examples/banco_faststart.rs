@@ -93,7 +93,10 @@ fn video_con_movflags(movflags: &str) -> Option<Vec<u8>> {
     let bitrate = std::env::var("WRUSP_BANCO_BITRATE").unwrap_or_else(|_| "3M".into());
     let dir = std::env::temp_dir().join("wrusp-banco-faststart");
     std::fs::create_dir_all(&dir).ok()?;
-    let etiqueta: String = movflags
+    // `WRUSP_BANCO_VCODEC` cambia el códec de vídeo (libx265, libvpx-vp9…) para
+    // reproducir en el banco lo que llegue en los chats de verdad.
+    let vcodec = std::env::var("WRUSP_BANCO_VCODEC").unwrap_or_else(|_| "libx264".into());
+    let etiqueta: String = format!("{movflags}-{vcodec}")
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
@@ -106,8 +109,14 @@ fn video_con_movflags(movflags: &str) -> Option<Vec<u8>> {
         .args(["-f", "lavfi", "-i"])
         .arg(format!("sine=frequency=440:duration={segundos}"))
         .args([
-            "-c:v", "libx264", "-b:v", &bitrate, "-pix_fmt", "yuv420p", "-c:a", "aac",
+            "-c:v", &vcodec, "-b:v", &bitrate, "-pix_fmt", "yuv420p", "-c:a", "aac",
         ])
+        // HEVC en MP4 con la etiqueta que usan los móviles (hvc1).
+        .args(if vcodec == "libx265" {
+            vec!["-tag:v", "hvc1"]
+        } else {
+            vec![]
+        })
         .args(["-movflags", movflags])
         .arg(&destino)
         .status()

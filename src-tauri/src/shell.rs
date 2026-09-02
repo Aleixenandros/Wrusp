@@ -202,6 +202,10 @@ fn handle_command(app: &AppHandle, origin: &str, url: &tauri::Url) {
                     crate::filedrop::pegar(&app, &etiqueta);
                 }
             }
+            // Un medio que falló y que la página ofrece volcar a disco (solo
+            // con `WRUSP_GUARDAR_MEDIOS_FALLIDOS`, ver `diagnostico`). Se lee
+            // de la vista que lo ofrece, que es la que lo tiene.
+            "medio-fallido" => crate::diagnostico::guardar_medio_fallido(&app, &origin, arg),
             // `unread/<id>/<n>`: lo emite el observador del título. El id
             // viaja en la orden, pero manda la vista emisora: solo puede
             // actualizar su propio contador.
@@ -619,6 +623,7 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .user_agent(CHROME_UA)
         .initialization_script(aislado(browser::disguise_script()))
         .initialization_script(aislado(browser::hide_webcodecs_script()))
+        .initialization_script(aislado(crate::diagnostico::init_script()))
         .initialization_script(aislado(browser::fix_large_mp4_blobs_script()))
         .initialization_script(aislado(browser::hide_native_app_promo_script()))
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))
