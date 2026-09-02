@@ -377,31 +377,37 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   const MAX_CAJAS = 64;
 
+  // Devuelve '' si hay que reordenar, y si no, el motivo en una palabra: es
+  // lo que sale en el registro cuando un vídeo falla sin que el remux tenga
+  // nada que hacer, y sin ello no se distingue «índice al final» de «códec
+  // que el sistema no tiene» o «fragmentado».
   async function hayQueReordenar(blob) {
     let pos = 0;
     let vistosDatos = false;
+    const legible = (t) => t.replace(/[^\x20-\x7e]/g, '?');
     for (let i = 0; i < MAX_CAJAS && pos + 8 <= blob.size; i++) {
       const cabecera = new DataView(await blob.slice(pos, pos + 16).arrayBuffer());
-      if (cabecera.byteLength < 8) return false;
+      if (cabecera.byteLength < 8) return 'cabecera corta';
       let tam = cabecera.getUint32(0);
       const tipo = String.fromCharCode(
         cabecera.getUint8(4), cabecera.getUint8(5),
         cabecera.getUint8(6), cabecera.getUint8(7));
+      if (i === 0 && !/^[a-z0-9 ]{4}$/i.test(tipo)) return 'no es MP4 (empieza por «' + legible(tipo) + '»)';
       if (tam === 1) {
-        if (cabecera.byteLength < 16) return false;
+        if (cabecera.byteLength < 16) return 'cabecera corta';
         const grande = cabecera.getBigUint64(8);
-        if (grande > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+        if (grande > BigInt(Number.MAX_SAFE_INTEGER)) return 'caja gigante';
         tam = Number(grande);
       } else if (tam === 0) {
         tam = blob.size - pos;
       }
-      if (tam < 8) return false;
-      if (tipo === 'moof' || tipo === 'sidx') return false; // fragmentado
+      if (tam < 8) return 'caja corrupta (' + legible(tipo) + ')';
+      if (tipo === 'moof' || tipo === 'sidx') return 'fragmentado (' + tipo + ')';
       if (tipo === 'mdat') vistosDatos = true;
-      if (tipo === 'moov') return vistosDatos;
+      if (tipo === 'moov') return vistosDatos ? '' : 'índice ya delante';
       pos += tam;
     }
-    return false;
+    return 'sin índice entre las primeras cajas';
   }
 
   // ── Puente con la página ─────────────────────────────────────────────────
@@ -460,6 +466,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
         porArreglada.delete(entrada.arreglada);
         try { revocarUrl.call(URL, entrada.arreglada); } catch (e) { /* ya no existía */ }
         entrada.arreglada = null;
+        entrada.definitiva = null;
         entrada.trabajo = null;
       }
     }
@@ -578,6 +585,34 @@ pub fn fix_large_mp4_blobs_script() -> String {
   // previsualizaciones), que cargan al recibir la fuente y fallan antes de
   // que nadie llame a play(). Si ya estaba reordenada, o no era candidata,
   // no hay más que hacer y se detiene.
+  // El nodo que lleva exactamente esta URL: el medio o un <source> suyo.
+  function portadorDe(medio, url) {
+    if (String(urlDe(medio) || '') === url) return medio;
+    for (const fuente of medio.querySelectorAll('source[src]'))
+      if (String(urlDe(fuente) || '') === url) return fuente;
+    return null;
+  }
+
+  // Intenta enderezar el blob de un medio que acaba de fallar y lo vuelve a
+  // arrancar; si no hay nada que enderezar, lo detiene.
+  function reparar(medio, nodo, url, entrada, seguir, detalle) {
+    enObras.add(medio);
+    return preparar(url)
+      .then((definitiva) => {
+        if (definitiva === url) {
+          enObras.delete(medio);
+          detener(medio, url, 'el blob no se puede reordenar (' + (entrada.motivo || '?') + ')' + detalle + ': pipeline detenido');
+          return;
+        }
+        anotar('medio con fallo' + detalle + ': se reordena y se reintenta');
+        return usar(medio, nodo, definitiva).then(() => {
+          enObras.delete(medio);
+          if (seguir && medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
+        });
+      })
+      .catch(() => enObras.delete(medio));
+  }
+
   function vigilarFallo(medio) {
     if (vigilados.has(medio)) return;
     vigilados.add(medio);
@@ -592,32 +627,43 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // Desmontar el pipeline borra `error`, y sin este rastro no hay forma de
       // saber después qué pasó (el banco lo lee de aquí).
       window.__wruspUltimoFallo = { codigo, url };
+      const esquema = url.slice(0, url.indexOf(':') + 1) || 'sin src';
       const detalle = ' (código ' + codigo + ', red ' + medio.networkState + ', datos ' + medio.readyState
-        + ', ' + (!entrada ? 'sin blob candidato' : nodo ? 'blob candidato sin reordenar' : 'blob ya reordenado')
+        + ', ' + (!entrada ? 'sin blob candidato, ' + esquema : nodo ? 'blob candidato' : 'blob ya reordenado')
         + (entrada && entrada.blob ? ', ' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') : '')
+        + (entrada && entrada.motivo ? ', ' + entrada.motivo : '')
         + ')';
       if (codigo === 1 || codigo === 2) {
         anotar('medio con aviso de transporte o red' + detalle);
         return;
       }
-      if (nodo && entrada && !entrada.arreglada && !reparados.has(medio)) {
+      const seguir = medio.autoplay || !medio.paused;
+      // Candidato aún sin preparar: se intenta enderezar aquí mismo. Es el
+      // camino de los vídeos con autoplay, que cargan al recibir la fuente y
+      // fallan antes de que nadie llame a play().
+      if (nodo && entrada && !entrada.definitiva && !reparados.has(medio)) {
         reparados.add(medio);
-        const seguir = medio.autoplay || !medio.paused;
+        reparar(medio, nodo, url, entrada, seguir, detalle);
+        return;
+      }
+      // Un blob que no pasó por nuestro `createObjectURL` (WhatsApp descifra
+      // parte de los medios en workers, y allí no llegamos): se lee con
+      // `fetch` y entra por el mismo camino. Si la lectura falla, era una
+      // MediaSource u otra cosa, y no hay nada que hacer salvo detenerlo.
+      if (!entrada && url.indexOf('blob:') === 0 && !reparados.has(medio)) {
+        reparados.add(medio);
         enObras.add(medio);
-        anotar('medio con fallo' + detalle + ': se reordena y se reintenta');
-        preparar(url)
-          .then((definitiva) => {
-            if (definitiva === url) {
-              enObras.delete(medio);
-              detener(medio, url, 'el blob no se ha podido reordenar: pipeline detenido');
-              return;
-            }
-            return usar(medio, nodo, definitiva).then(() => {
-              enObras.delete(medio);
-              if (seguir && medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
-            });
-          })
-          .catch(() => enObras.delete(medio));
+        fetch(url).then((r) => r.blob()).then((blob) => {
+          const nueva = { blob, arreglada: null, definitiva: null, trabajo: null };
+          candidatos.set(url, nueva);
+          enObras.delete(medio);
+          const portadorReal = portadorDe(medio, url) || medio;
+          return reparar(medio, portadorReal, url, nueva, seguir,
+            detalle.replace('sin blob candidato, blob:', 'blob leído a posteriori, ' + Math.round(blob.size / 1024) + ' KiB ' + (blob.type || 'sin tipo')));
+        }).catch(() => {
+          enObras.delete(medio);
+          detener(medio, url, 'medio con fallo' + detalle + ', el blob no se deja leer (¿MediaSource?): pipeline detenido');
+        });
         return;
       }
       detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
@@ -643,28 +689,48 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   // Deja lista la URL definitiva del blob: la arreglada si hacía falta
   // reordenar, o la original. Se hace una sola vez por blob.
+  // Deja lista la URL definitiva del blob: la arreglada si hacía falta
+  // reordenar, o la original. Se hace una sola vez por blob, y el resultado
+  // queda en `entrada.definitiva` **también cuando no hay nada que
+  // reordenar**. Sin eso, el manejador del evento `play` de más abajo veía un
+  // candidato «sin arreglar», lo pausaba, lo preparaba y lo volvía a arrancar,
+  // y ese arranque disparaba otro `play`: un bucle infinito de pausa y
+  // reproducción por cada GIF cuyo MP4 ya venía bien. Hasta la 0.4.5 el tope
+  // de 35 candidatos los expulsaba antes de que se notara; la 0.4.6 quitó el
+  // tope y el bucle se llevó por delante cualquier chat con GIF (medido: 33 s
+  // de CPU en una sesión de 30 s).
   function preparar(url) {
     const entrada = candidatos.get(url);
     if (!entrada) return Promise.resolve(url);
-    if (entrada.arreglada) return Promise.resolve(entrada.arreglada);
+    if (entrada.definitiva) return Promise.resolve(entrada.definitiva);
     if (entrada.trabajo) return entrada.trabajo;
     entrada.trabajo = (async () => {
       try {
-        if (!(await hayQueReordenar(entrada.blob))) return url;
+        const motivo = await hayQueReordenar(entrada.blob);
+        if (motivo) {
+          entrada.motivo = motivo;
+          entrada.definitiva = url;
+          return url;
+        }
         const bytes = await entrada.blob.arrayBuffer();
         const arreglado = reordenar(bytes);
         if (!arreglado) {
           anotar('vídeo con el índice al final que no se ha podido reordenar');
+          entrada.motivo = 'no reordenable';
+          entrada.definitiva = url;
           return url;
         }
         const tipo = entrada.blob.type || 'video/mp4';
         entrada.arreglada = crearUrl.call(URL, new Blob([arreglado], { type: tipo }));
+        entrada.definitiva = entrada.arreglada;
         porArreglada.set(entrada.arreglada, url);
         recordarArreglada(url);
         anotar('vídeo reordenado (' + Math.round(arreglado.byteLength / 1024) + ' KiB)');
         return entrada.arreglada;
       } catch (e) {
-        return url; // ante cualquier sorpresa, el blob original
+        entrada.motivo = 'excepción al leerlo';
+        entrada.definitiva = url; // ante cualquier sorpresa, el blob original
+        return url;
       }
     })();
     return entrada.trabajo;
@@ -758,7 +824,9 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (!nodo) return;
     const url = String(urlDe(nodo));
     const entrada = candidatos.get(url);
-    if (!entrada || entrada.arreglada) return;
+    // Ya preparado (reordenado o sin nada que reordenar): no se toca. Ver
+    // `preparar` para el bucle que había aquí.
+    if (!entrada || entrada.definitiva) return;
     medio.pause();
     enObras.add(medio);
     preparar(url)
@@ -774,7 +842,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
     const url = crearUrl.call(this, objeto);
     if (objeto instanceof Blob) {
       const candidato = objeto.type ? esMedio.test(objeto.type) : objeto.size >= MIN_SIN_TIPO;
-      if (candidato) candidatos.set(url, { blob: objeto, arreglada: null, trabajo: null });
+      if (candidato) candidatos.set(url, { blob: objeto, arreglada: null, definitiva: null, trabajo: null });
     }
     return url;
   };

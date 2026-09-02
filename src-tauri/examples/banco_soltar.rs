@@ -342,7 +342,11 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
     vista.load_html(&pagina, Some("http://localhost/"));
 
     let nombre_tiempo = nombre_para_tiempo.to_string();
+    let temporizador_vencido = temporizador.clone();
     temporizador.set(Some(gtk::glib::timeout_add_seconds_local(30, move || {
+        // Al vencer, GLib retira la fuente por su cuenta: que nadie intente
+        // retirarla otra vez después.
+        temporizador_vencido.set(None);
         // Que la maqueta no conteste es un fallo como cualquier otro: casi
         // siempre significa que el script lanzó y no llegó a informar.
         println!("\n── {nombre_tiempo}");

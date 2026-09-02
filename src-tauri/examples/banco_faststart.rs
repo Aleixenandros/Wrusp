@@ -71,6 +71,19 @@ fn base64(datos: &[u8]) -> String {
 /// y pasa de los 2 MiB del búfer con el que WebKitGTK sirve los blobs, que es
 /// la condición exacta del fallo.
 fn video_real() -> Option<Vec<u8>> {
+    // `WRUSP_BANCO_MOVFLAGS` permite generar otras variantes (por ejemplo
+    // `frag_keyframe+empty_moov+default_base_moof` para un MP4 fragmentado).
+    let movflags = std::env::var("WRUSP_BANCO_MOVFLAGS").unwrap_or_else(|_| "-faststart".into());
+    video_con_movflags(&movflags)
+}
+
+/// Un H.264/AAC ya ordenado (`+faststart`): el caso normal de WhatsApp hoy,
+/// en el que el remux no tiene nada que hacer y no debe tocar nada.
+fn video_ordenado() -> Option<Vec<u8>> {
+    video_con_movflags("+faststart")
+}
+
+fn video_con_movflags(movflags: &str) -> Option<Vec<u8>> {
     // Con `WRUSP_BANCO_SEGUNDOS` se alarga el vídeo para tantear a partir de
     // qué tamaño empieza a romperse el blob en el motor.
     let segundos: u32 = std::env::var("WRUSP_BANCO_SEGUNDOS")
@@ -80,7 +93,11 @@ fn video_real() -> Option<Vec<u8>> {
     let bitrate = std::env::var("WRUSP_BANCO_BITRATE").unwrap_or_else(|_| "3M".into());
     let dir = std::env::temp_dir().join("wrusp-banco-faststart");
     std::fs::create_dir_all(&dir).ok()?;
-    let destino = dir.join(format!("indice-al-final-{segundos}s-{bitrate}.mp4"));
+    let etiqueta: String = movflags
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let destino = dir.join(format!("video-{etiqueta}-{segundos}s-{bitrate}.mp4"));
     let salida = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
         .arg(format!(
@@ -91,7 +108,7 @@ fn video_real() -> Option<Vec<u8>> {
         .args([
             "-c:v", "libx264", "-b:v", &bitrate, "-pix_fmt", "yuv420p", "-c:a", "aac",
         ])
-        .args(["-movflags", "-faststart"])
+        .args(["-movflags", movflags])
         .arg(&destino)
         .status()
         .ok()?;
@@ -184,9 +201,15 @@ const ALGORITMO: &str = r#"
     v.src = url;
     try { await v.play(); } catch (e) { /* sin códec: da igual, interesa la URL */ }
     const definitiva = v.src;
-    if (definitiva === url) return null;   // no lo tocó
-    const resp = await fetch(definitiva);
-    return new Uint8Array(await resp.arrayBuffer());
+    // Sin cambio, o detenido por el propio script (quita el `src` cuando no hay
+    // nada que reordenar y el motor falla): no lo tocó.
+    if (definitiva === url || !definitiva) return null;
+    try {
+      const resp = await fetch(definitiva);
+      return new Uint8Array(await resp.arrayBuffer());
+    } catch (e) {
+      return null;
+    }
   }
 
   (async () => {
@@ -391,6 +414,40 @@ const AUTOPLAY: &str = r#"
 </script>
 "#;
 
+/// Maqueta 5 — el caso de la 0.4.6: un MP4 que ya viene con el índice delante
+/// (como casi todos los de WhatsApp hoy, según el registro) puesto en un
+/// <video autoplay loop>. El remux no tiene nada que hacer y el manejador de
+/// `play` no debe entrar en bucle de pausa y reproducción: se cuentan las
+/// pausas. Medido en uso real: 33 s de CPU en una sesión de 30 s.
+const YA_ORDENADO: &str = r#"
+<video id="v" autoplay muted loop playsinline style="width:320px;display:block"></video>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    const v = document.getElementById('v');
+    let pausas = 0, arranques = 0, errores = 0;
+    v.addEventListener('pause', () => pausas++);
+    v.addEventListener('play', () => arranques++);
+    v.addEventListener('error', () => errores++);
+    v.src = url;
+    await new Promise((listo) => setTimeout(listo, 6000));
+    // Y lo que hace WhatsApp con un GIF al volver a la vista: play() explícito.
+    try { await v.play(); } catch (e) {}
+    await new Promise((listo) => setTimeout(listo, 2000));
+    informe([
+      ['la fuente no se toca', v.src === url],
+      ['arranca y avanza', !v.paused && v.currentTime > 1],
+      ['sin bucle de pausa/reproducción', pausas <= 2 && arranques <= 4],
+      ['sin errores de medio', errores === 0],
+    ], 'pausas=' + pausas + ' arranques=' + arranques + ' errores=' + errores + ' t=' + v.currentTime.toFixed(2));
+  })();
+</script>
+"#;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
     let nombre_para_tiempo = nombre;
     // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
@@ -445,7 +502,11 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
     vista.load_html(&pagina, Some("http://localhost/"));
 
     let nombre_tiempo = nombre_para_tiempo.to_string();
+    let temporizador_vencido = temporizador.clone();
     temporizador.set(Some(gtk::glib::timeout_add_seconds_local(30, move || {
+        // Al vencer, GLib retira la fuente por su cuenta: que nadie intente
+        // retirarla otra vez después.
+        temporizador_vencido.set(None);
         // Que la maqueta no conteste es un fallo como cualquier otro: casi
         // siempre significa que el script lanzó y no llegó a informar.
         println!("\n── {nombre_tiempo}");
@@ -510,6 +571,14 @@ fn main() {
                 &AUTOPLAY.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
+            if let Some(ordenado) = video_ordenado() {
+                let incrustado = format!("'{}'", base64(&ordenado));
+                correr(
+                    "Un MP4 ya ordenado con autoplay no entra en bucle",
+                    &YA_ORDENADO.replace("MP4_BASE64", &incrustado),
+                    fallos.clone(),
+                );
+            }
         }
         None => println!(
             "\n── Reproducción real\n   (saltada: hace falta ffmpeg en el PATH para generar el vídeo)"

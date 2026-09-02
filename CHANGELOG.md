@@ -4,6 +4,18 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.7] — 2026-09-03
+
+### Corregido
+
+- **Los chats con GIF dejan de clavar la aplicación.** La 0.4.6 introdujo un bucle: para un vídeo cuyo MP4 ya venía con el índice delante, el remux no tenía nada que hacer, pero el manejador del evento `play` lo seguía viendo como «pendiente de arreglar» y lo pausaba, lo preparaba y lo volvía a arrancar, y ese arranque disparaba otro `play`. Cada GIF del chat entraba en un bucle infinito de pausa y reproducción: medido en el registro del sistema, 33 segundos de CPU en una sesión de 30 segundos, y 11 minutos de CPU con 3,1 GB de pico en otra de dos horas. El bucle existía desde la 0.4.3, pero hasta la 0.4.5 el tope de 35 candidatos expulsaba los vídeos antes de que se notara; al quitarlo en la 0.4.6 afectó a todos. Ahora el resultado de preparar un blob queda registrado también cuando no hay nada que reordenar, y el manejador no lo toca más.
+- **Los vídeos que fallan sin que el remux pueda hacer nada dicen por qué.** El registro de la 0.4.6 mostró que los ocho vídeos candidatos que fallaron con código 4 ya tenían el índice delante: la causa del código 4 en este equipo no es la que se venía persiguiendo desde la 0.3.8. Cada fallo anota ahora el motivo por el que no se reordena (índice ya delante, fragmentado, no es MP4, etc.), el esquema de la fuente y el tipo y tamaño del blob.
+- **Los blobs que WhatsApp crea fuera de la página ya no quedan sin diagnóstico.** 22 de los 30 fallos de la 0.4.6 eran de blobs que no habían pasado por el `createObjectURL` de la página (WhatsApp descifra parte de los medios en workers). Ahora, al fallar, se leen con `fetch`, entran por el mismo camino de reparación y, si no se dejan leer, el registro lo dice.
+
+### Añadido
+
+- **Maqueta de regresión del bucle** en `banco_faststart`: un MP4 ya ordenado en un `<video autoplay loop>` tiene que arrancar sin que se acumulen pausas ni arranques. `WRUSP_BANCO_MOVFLAGS` permite generar otras variantes del vídeo de prueba (por ejemplo, fragmentado).
+
 ## [0.4.6] — 2026-09-02
 
 ### Corregido
