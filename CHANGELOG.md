@@ -4,6 +4,22 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.6] — 2026-09-02
+
+### Corregido
+
+- **Los vídeos con reproducción automática vuelven a verse, y el chat deja de clavarse.** El remux que endereza los MP4 con el índice al final solo se lanzaba al pulsar reproducir; los GIF y las previsualizaciones silenciosas de WhatsApp llevan `autoplay`, cargan en cuanto reciben la fuente y fallaban antes de que nadie pudiera reordenarlas. La 0.4.4, además, empezó a tratar ese fallo (código 4, «fuente no admitida») como transitorio: el reproductor no se desmontaba y WhatsApp se quedaba reintentando, que es exactamente lo que dejaba la ventana sin responder en la 0.4.3. En el registro real: 233 fallos de ese código desde la 0.4.4 y cero vídeos reordenados. Ahora el fallo es el disparador: si la fuente es un blob que aún no se ha enderezado, se reordena y se reintenta en el acto; si ya lo estaba, o no era uno de esos blobs, el reproductor se detiene como hacía la 0.4.3.
+- **Los GIF ya no se quedan congelados al volver a la pantalla.** La 0.4.4 pausaba los vídeos con `autoplay` al salir del área visible para no gastar CPU, pero no los reanudaba al volver. Ahora se reanudan, y solo los que pausó Wrusp, no los que paró el usuario.
+- **Un vídeo ya no deja de ser reparable por abrir un chat con muchos adjuntos.** La lista de blobs candidatos se acotaba a 35 entradas y expulsaba vídeos que WhatsApp aún no había reproducido; al pulsarlos ya no había forma de enderezarlos. El tope se aplica ahora solo a las copias reordenadas, que son la única memoria que añade Wrusp, y los blobs sin tipo por debajo de 64 KiB (miniaturas, stickers) ni se apuntan.
+- **Pegar una imagen ya no la envía por duplicado.** Desde la 0.4.3 Wrusp comprobaba si WhatsApp había aceptado el adjunto buscando el botón de enviar con un marcado que la WhatsApp real ya no usa, y al no encontrarlo seguía probando vía tras vía: pegado, cuatro soltados sintéticos y las entradas de fichero del menú de adjuntar. Cada vía añadía la misma imagen al previsualizador. Ahora un pegado que WhatsApp toma es un pegado hecho, y hay una sola entrega en curso por gesto: dos Ctrl+V seguidos ya no se solapan.
+- **Arrastrar un fichero sobre un mensaje vuelve a adjuntarlo.** El soltado sintético caía sobre el elemento que había bajo el ratón al entrar, pero WhatsApp monta su capa «Suelta aquí» al recibir el arrastre y es esa capa la que escucha el soltado. Ahora el soltado va sobre lo que haya bajo el ratón después de entrar. La confirmación de que WhatsApp lo ha aceptado mira varias señales (botón de enviar con cualquiera de sus marcados, panel de edición, entradas de fichero desmontadas) y, si el soltado no deja rastro, hay una única vía de respaldo en vez de una cascada.
+- **La primera cuenta ya no carga WhatsApp tres veces al arrancar.** El tema se aplicaba a la ventana recargando todas las vistas, incluida la que se acababa de crear con el tema ya puesto.
+
+### Añadido
+
+- **Diagnóstico de cada fallo de medio en el registro:** código, estado de red y de datos, si la fuente era un blob candidato o ya reordenado, y su tamaño y tipo. Antes solo salía el código, y no se podía distinguir «remux no aplicado» de «códec ausente».
+- **Bancos ampliados** (`cargo run --example banco_faststart` y `banco_soltar`): vídeo con `autoplay` que se repara al fallar y sigue tras salir de la pantalla; pegado que WhatsApp toma sin que el previsualizador se reconozca (una sola entrega); capa «Suelta aquí» que escucha el soltado; dos Ctrl+V seguidos. El arnés retira el temporizador y cierra la ventana de cada maqueta al terminar: antes una maqueta lenta se colaba en la siguiente y el fallo salía atribuido a quien no era.
+
 ## [0.4.5] — 2026-09-01
 
 ### Seguridad

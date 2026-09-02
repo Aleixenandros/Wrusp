@@ -263,8 +263,14 @@ const REPRODUCCION: &str = r#"
           + (v.src === url ? '@original' : '@reordenado'));
       });
     v.src = url;
-    try { await v.play(); } catch (e) { diario.push('play:' + e.name); }
-    await new Promise((listo) => setTimeout(listo, 5000));
+    // Sin `await`: si la promesa de play() no se resuelve nunca, el informe
+    // tiene que salir igual, con lo que haya pasado hasta entonces.
+    let playResuelto = 'pendiente';
+    try {
+      v.play().then(() => { playResuelto = 'resuelta'; }, (e) => { playResuelto = 'rechazada:' + e.name; });
+    } catch (e) { playResuelto = 'lanzó:' + e.name; }
+    await new Promise((listo) => setTimeout(listo, 6000));
+    diario.push('play=' + playResuelto + ' readyState=' + v.readyState + ' networkState=' + v.networkState);
     const fallo = diario.filter((d) => d.startsWith('error')).join(',');
     informe([
       ['la fuente queda reordenada', v.src !== url],
@@ -333,7 +339,66 @@ const MUCHOS: &str = r#"
 </script>
 "#;
 
+/// Maqueta 4 — `autoplay`, que es como WhatsApp pone los GIF y las
+/// previsualizaciones silenciosas. No pasa por `play()`: el motor carga la
+/// fuente original en cuanto la recibe y falla con código 4 antes de que
+/// nadie pueda reordenarla. Desde la 0.4.4 ese fallo se daba por transitorio
+/// y el vídeo quedaba muerto (y WhatsApp reintentando). Ahora el fallo es el
+/// disparador: se reordena y se reintenta.
+///
+/// Y de paso lo de la visibilidad: un GIF que sale de la pantalla se pausa,
+/// pero al volver tiene que seguir; la 0.4.4 lo dejaba congelado.
+const AUTOPLAY: &str = r#"
+<video id="v" autoplay muted loop playsinline style="width:320px;display:block"></video>
+<div id="relleno" style="height:4000px"></div>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    const v = document.getElementById('v');
+    const diario = [];
+    for (const evento of ['error', 'loadedmetadata', 'playing', 'pause'])
+      v.addEventListener(evento, () => {
+        diario.push(evento
+          + (evento === 'error' ? '(' + ((v.error && v.error.code)
+              || (window.__wruspUltimoFallo && window.__wruspUltimoFallo.codigo) || '?') + ')' : '')
+          + (v.src === url ? '@original' : '@reordenado'));
+      });
+    v.src = url;   // sin play(): arranca solo, o no
+    await new Promise((listo) => setTimeout(listo, 7000));
+    const enMarcha = !v.paused && v.currentTime > 0.2;
+    const t1 = v.currentTime;
+
+    // Fuera de la pantalla y de vuelta.
+    window.scrollTo(0, 4000);
+    await new Promise((listo) => setTimeout(listo, 1500));
+    const pausadoFuera = v.paused;
+    window.scrollTo(0, 0);
+    await new Promise((listo) => setTimeout(listo, 2500));
+    const sigueAlVolver = !v.paused && v.currentTime !== t1;
+
+    informe([
+      ['la fuente queda reordenada sin que nadie llame a play()', v.src !== url],
+      ['el vídeo con autoplay arranca', enMarcha],
+      ['no queda un error de medio colgando', !v.error],
+      ['fuera de la pantalla se pausa', pausadoFuera],
+      ['al volver sigue reproduciéndose', sigueAlVolver],
+    ], 'currentTime=' + v.currentTime.toFixed(2) + ' · ' + diario.join(' '));
+  })();
+</script>
+"#;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
+    let nombre_para_tiempo = nombre;
+    // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
+    if let Ok(solo) = std::env::var("WRUSP_BANCO_SOLO") {
+        if !nombre.contains(&solo) {
+            return;
+        }
+    }
     let pagina = format!(
         "<!doctype html><meta charset=\"utf-8\">{INFORME}{}",
         maqueta.replace(
@@ -351,7 +416,15 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
     ventana.add(&vista);
     ventana.show_all();
 
+    // El temporizador se retira en cuanto la maqueta informa, y la ventana se
+    // cierra al terminar: si no, una maqueta que tarda deja su temporizador
+    // vivo y su página en marcha, y ambos se cuelan en la siguiente
+    // (main_quit a destiempo, «FALLO» atribuido a quien no era).
+    let temporizador: std::rc::Rc<std::cell::Cell<Option<gtk::glib::SourceId>>> =
+        std::rc::Rc::new(std::cell::Cell::new(None));
+
     let nombre = nombre.to_string();
+    let temporizador_informe = temporizador.clone();
     vista.connect_title_notify(move |v| {
         let Some(titulo) = v.title() else { return };
         let Some(msg) = titulo.strip_prefix("WRUSP:") else {
@@ -364,19 +437,32 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
         if msg.starts_with("HAY FALLOS") {
             fallos.set(fallos.get() + 1);
         }
+        if let Some(id) = temporizador_informe.take() {
+            id.remove();
+        }
         gtk::main_quit();
     });
     vista.load_html(&pagina, Some("http://localhost/"));
 
-    gtk::glib::timeout_add_seconds_local(30, move || {
+    let nombre_tiempo = nombre_para_tiempo.to_string();
+    temporizador.set(Some(gtk::glib::timeout_add_seconds_local(30, move || {
         // Que la maqueta no conteste es un fallo como cualquier otro: casi
         // siempre significa que el script lanzó y no llegó a informar.
+        println!("\n── {nombre_tiempo}");
         println!("   FALLO (tiempo agotado: la maqueta no llegó a informar)");
         sin_respuesta.set(sin_respuesta.get() + 1);
         gtk::main_quit();
         gtk::glib::ControlFlow::Break
-    });
+    })));
     gtk::main();
+    if let Some(id) = temporizador.take() {
+        id.remove();
+    }
+    // Fuera la página: que no siga reproduciendo ni informando por detrás.
+    vista.load_html("", None);
+    unsafe {
+        ventana.destroy();
+    }
 }
 
 /// Las mismas condiciones en las que corre Wrusp: sin ellas el banco mediría
@@ -417,6 +503,11 @@ fn main() {
             correr(
                 "Un chat con dos docenas de adjuntos",
                 &MUCHOS.replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
+            correr(
+                "Autoplay: se repara al fallar, y vuelve tras salir de pantalla",
+                &AUTOPLAY.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
         }

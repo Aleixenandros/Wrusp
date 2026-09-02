@@ -339,44 +339,88 @@ pub const SCRIPT: &str = r#"(function () {
     return datos;
   };
 
+  // ── ¿Ha aceptado WhatsApp el adjunto? ────────────────────────────────────
   // Un soltado no dice por sí solo si ha servido de algo: `preventDefault` lo
   // llama cualquiera que escuche `dragover` —WhatsApp el primero— para que el
-  // navegador no abra el fichero en la vista. Fiarse de eso daba por bueno el
-  // primer destino que se probaba, un `<p>` de un mensaje cualquiera, y ahí se
-  // quedaba sin haber adjuntado nada: en el registro salía «soltado aceptado
-  // en P» y el fichero no llegaba a ninguna parte. Lo que sí se ve es el
-  // efecto: cuando WhatsApp acepta un adjunto abre su previsualizador, con el
-  // botón de enviar.
-  const hayPrevisualizador = () => {
-    // El botón de enviar está siempre en el DOM: lo que cambia es si se ve.
-    // Buscarlo con `querySelector` a secas daba por abierto un previsualizador
-    // que estaba oculto, y con eso Wrusp se negaba a entregar nada.
-    for (const nodo of document.querySelectorAll(
-        '[data-icon="send"], [data-testid="send"], [data-icon="send-light"]')) {
-      const caja = nodo.getBoundingClientRect();
-      // `offsetParent` cubre lo que esté oculto por cualquier ancestro; la
-      // medida cubre lo que va en capas fijas, que no tienen offsetParent.
-      if (nodo.offsetParent !== null || (caja.width > 0 && caja.height > 0)) return true;
-    }
-    return false;
-  };
+  // navegador no abra el fichero en la vista. Lo que sí se ve es el efecto:
+  // cuando WhatsApp acepta un adjunto abre su previsualizador, con el botón
+  // de enviar.
+  //
+  // El marcado de ese botón ha cambiado más de una vez: la 0.4.3 buscaba
+  // exactamente `data-icon="send"` y con la WhatsApp real no acertó ni una
+  // vez (cero «aceptado» en el registro desde entonces). Al no verlo, Wrusp
+  // seguía probando vía tras vía y cada una añadía la misma imagen al
+  // previsualizador: de ahí las fotos que se enviaban por duplicado. Ahora se
+  // buscan varias formas del botón y del panel y, sobre todo, se compara la
+  // página de antes con la de después: si aparecen botones de enviar o
+  // paneles, o desaparecen las entradas de fichero del menú de adjuntar
+  // (WhatsApp las desmonta al abrir el previsualizador), es que lo ha tomado.
+  const SELECTOR_ENVIAR = '[data-icon="send"], [data-icon^="send"], [data-icon*="-send"], [data-icon$="send-filled"], [data-testid="send"], button[aria-label="Enviar" i], div[role="button"][aria-label="Enviar" i], button[aria-label="Send" i], div[role="button"][aria-label="Send" i]';
+  const SELECTOR_PANEL = '[data-animate-modal-body], [data-animate-modal-popup], [data-animate-media-viewer], [data-testid="media-editor"], [data-testid="media-caption-input-container"], [role="dialog"]';
 
-  const esperarAdjunto = async (ms) => {
+  // `offsetParent` cubre lo que esté oculto por cualquier ancestro; la medida
+  // cubre lo que va en capas fijas, que no tienen offsetParent.
+  const visible = (nodo) => {
+    if (nodo.offsetParent !== null) return true;
+    const caja = nodo.getBoundingClientRect();
+    return caja.width > 0 && caja.height > 0;
+  };
+  const cuantos = (selector) => Array.prototype.filter.call(document.querySelectorAll(selector), visible).length;
+  const foto = () => ({
+    enviar: cuantos(SELECTOR_ENVIAR),
+    paneles: cuantos(SELECTOR_PANEL),
+    entradas: document.querySelectorAll('input[type="file"]').length,
+  });
+  const haCambiado = (antes) => {
+    const ahora = foto();
+    if (ahora.enviar > antes.enviar) return 'botón de enviar';
+    if (ahora.paneles > antes.paneles) return 'panel';
+    if (antes.entradas > 0 && ahora.entradas < antes.entradas) return 'entradas desmontadas';
+    return '';
+  };
+  // Un previsualizador abierto ahora mismo: un botón de enviar visible dentro
+  // de un panel visible. El de la caja de escritura no está en ningún panel,
+  // así que tener texto a medias no cuenta.
+  const previsualizadorAbierto = () => Array.prototype.some.call(
+    document.querySelectorAll(SELECTOR_PANEL),
+    (panel) => visible(panel) && Array.prototype.some.call(panel.querySelectorAll(SELECTOR_ENVIAR), visible));
+
+  const esperarConfirmacion = async (antes, ms) => {
     for (let esperado = 0; esperado < ms; esperado += 100) {
       await esperar(100);
-      if (hayPrevisualizador()) return true;
+      const señal = haCambiado(antes);
+      if (señal) return señal;
+      if (previsualizadorAbierto()) return 'previsualizador';
     }
-    return false;
+    return '';
   };
 
-  const soltarEn = async (destino, ficheros) => {
-    for (const tipo of ['dragenter', 'dragover', 'dragover', 'drop']) {
-      destino.dispatchEvent(new DragEvent(tipo, {
-        bubbles: true, cancelable: true, composed: true, dataTransfer: transporte(ficheros)
-      }));
-      // WhatsApp decide con estado de React entre un evento y el siguiente.
+  // ── Las tres vías ────────────────────────────────────────────────────────
+  const eventoArrastre = (tipo, x, y, ficheros) => new DragEvent(tipo, {
+    bubbles: true, cancelable: true, composed: true,
+    clientX: x, clientY: y, dataTransfer: transporte(ficheros),
+  });
+  const nuestro = (nodo) => !!(nodo && nodo.closest && nodo.closest('#wrusp-rail'));
+
+  // El `dragenter` va donde cayó el ratón; el `drop`, sobre lo que haya en
+  // ese punto un instante después. WhatsApp monta su capa «Suelta aquí» al
+  // entrar el arrastre, y es esa capa la que escucha el `drop`: soltarlo
+  // sobre el elemento original —un enlace de un mensaje, en el registro real—
+  // no llegaba a ninguna parte.
+  const soltarEn = async (destino, x, y, ficheros) => {
+    destino.dispatchEvent(eventoArrastre('dragenter', x, y, ficheros));
+    await esperar(150); // WhatsApp decide con estado de React entre un evento y el siguiente
+    let objetivo = document.elementFromPoint(x, y);
+    if (!objetivo || nuestro(objetivo)) objetivo = destino;
+    if (objetivo !== destino) {
+      objetivo.dispatchEvent(eventoArrastre('dragenter', x, y, ficheros));
       await esperar(40);
     }
+    for (const tipo of ['dragover', 'dragover', 'drop']) {
+      objetivo.dispatchEvent(eventoArrastre(tipo, x, y, ficheros));
+      await esperar(40);
+    }
+    return objetivo;
   };
 
   const pegarEn = (destino, ficheros) => {
@@ -388,74 +432,100 @@ pub const SCRIPT: &str = r#"(function () {
   };
 
   // Respaldo cuando el soltado no cuaja: la misma entrada de fichero que hay
-  // detrás del menú de adjuntar. Es la vía más directa y no depende de dónde
-  // caiga el ratón, pero va la última porque hay que acertar con la entrada.
-  const porEntradaDeFichero = async (ficheros) => {
+  // detrás del menú de adjuntar. Solo las que declaren aceptar lo que traemos
+  // (o, si no hay ninguna que lo declare, la primera que haya): probar las
+  // demás «por si acaso» es lo que adjuntaba por partida doble.
+  const porEntradaDeFichero = async (ficheros, antes) => {
     const soloMedios = ficheros.every((f) => /^(image|video)\//.test(f.type));
     const entradas = [...document.querySelectorAll('input[type="file"]')];
     const declara = (e) => /image|video/.test((e.getAttribute('accept') || '').toLowerCase());
-    // Primero las que declaren aceptar lo que traemos; después, las demás.
-    const preferidas = entradas.filter((e) => (soloMedios ? declara(e) : !declara(e)));
-    const resto = entradas.filter((e) => !preferidas.includes(e));
-    for (const entrada of [...preferidas, ...resto]) {
+    let preferidas = entradas.filter((e) => (soloMedios ? declara(e) : !declara(e)));
+    if (!preferidas.length && entradas.length) preferidas = [entradas[0]];
+    for (const entrada of preferidas) {
       try {
         entrada.files = transporte(ficheros).files;
       } catch (e) {
         continue; // esa entrada no admite que le pongamos ficheros
       }
       entrada.dispatchEvent(new Event('change', { bubbles: true }));
-      if (await esperarAdjunto(1200)) return entrada.getAttribute('accept') || 'sin accept';
+      if (await esperarConfirmacion(antes, 1500)) return entrada.getAttribute('accept') || 'sin accept';
     }
     return null;
   };
+
+  // ── Una entrega por gesto ────────────────────────────────────────────────
+  // Mientras una entrega está en curso no se empieza otra: en el registro
+  // real dos Ctrl+V seguidos se solapaban y las dos cascadas se pisaban.
+  let entregando = false;
 
   // `x` negativa = viene del portapapeles y no hay punto donde soltarlo.
   window.__wruspEntregar = async function (x, y) {
     const ficheros = listos.splice(0, listos.length);
     if (!ficheros.length) return;
     const nombres = ficheros.map((f) => f.name).join(', ');
+    if (entregando) {
+      anotar('hay una entrega en curso: se descarta ' + nombres);
+      return;
+    }
     // Con el previsualizador ya abierto no hay forma de distinguir si lo que
     // se ve es de este adjunto o del anterior, así que no se toca nada.
-    if (hayPrevisualizador()) {
+    if (previsualizadorAbierto()) {
       anotar('hay un adjunto a medias sin enviar: no se entrega ' + nombres);
       return;
     }
-    // Un evento solo lo ven el destino y sus padres, así que se prueba donde
-    // más sentido tiene: el punto del soltado o el foco (la caja del chat), y
-    // si no, el centro de la vista, que cae dentro del panel de conversación.
-    const punto = x < 0 ? null : document.elementFromPoint(x, y);
+    entregando = true;
+    try {
+      await entregar(x, y, ficheros, nombres);
+    } catch (e) {
+      anotar('la entrega de ' + nombres + ' falló: ' + ((e && e.message) || e));
+    } finally {
+      entregando = false;
+    }
+  };
+
+  async function entregar(x, y, ficheros, nombres) {
+    const antes = foto();
     const foco = document.activeElement;
     const chat = document.querySelector('#main, [role="region"], [data-testid="conversation-panel-wrapper"], footer, [contenteditable="true"]');
-    const centro = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
-    const destinos = [punto, foco, chat, centro, document.body]
-      .filter((d, i, todos) => d && todos.indexOf(d) === i);
 
-    // Lo pegado se entrega primero como pegado, que es lo que WhatsApp espera
-    // de una captura; si nadie lo recoge, se intenta como soltado.
+    // Lo pegado se entrega como pegado, que es lo que WhatsApp espera de una
+    // captura, y una sola vez: si su manejador se lo queda (`preventDefault`)
+    // ya está adjuntado, se vea o no el previsualizador. Volver a intentarlo
+    // por otra vía es justo lo que duplicaba las imágenes.
     if (x < 0) {
-      for (const destino of destinos) {
-        if (pegarEn(destino, ficheros) && await esperarAdjunto(1200)) {
-          anotar('pegado aceptado (' + nombres + ')');
-          return;
-        }
-      }
-    }
-    for (const destino of destinos) {
-      await soltarEn(destino, ficheros);
-      if (await esperarAdjunto(1200)) {
-        anotar('soltado aceptado en ' + (destino.tagName || '?') + ' (' + nombres + ')');
+      const destino = (foco && foco !== document.body && !nuestro(foco)) ? foco : (chat || document.body);
+      if (pegarEn(destino, ficheros)) {
+        const señal = await esperarConfirmacion(antes, 1500);
+        anotar('pegado aceptado' + (señal ? ' (' + señal + ')' : ' (sin confirmación visual)') + ': ' + nombres);
         return;
       }
+      anotar('nadie recogió el pegado de ' + nombres + ': se prueba como soltado');
     }
-    const entrada = await porEntradaDeFichero(ficheros);
-    if (entrada) {
-      anotar('adjuntado por la entrada de fichero [' + entrada + '] (' + nombres + ')');
+
+    // Soltado: en el punto del ratón o, para lo pegado, en el centro del
+    // panel de conversación.
+    const px = x < 0 ? Math.round(window.innerWidth / 2) : x;
+    const py = x < 0 ? Math.round(window.innerHeight / 2) : y;
+    let destino = document.elementFromPoint(px, py);
+    if (!destino || nuestro(destino)) destino = chat || document.body;
+    const objetivo = await soltarEn(destino, px, py, ficheros);
+    let señal = await esperarConfirmacion(antes, 1500);
+    if (señal) {
+      anotar('soltado aceptado en ' + (objetivo.tagName || '?') + ' (' + señal + '): ' + nombres);
       return;
     }
+    // Una sola vía de respaldo, y solo si el soltado no ha dejado rastro.
+    const entrada = await porEntradaDeFichero(ficheros, antes);
+    if (entrada) {
+      anotar('adjuntado por la entrada de fichero [' + entrada + ']: ' + nombres);
+      return;
+    }
+    señal = haCambiado(antes);
     anotar('nadie aceptó ' + ficheros.length + ' fichero(s): ' + nombres +
-           ' · destinos=' + destinos.map((d) => d.tagName || '?').join('/') +
-           ' · entradas=' + document.querySelectorAll('input[type=file]').length);
-  };
+           ' · soltado en ' + (objetivo.tagName || '?') +
+           ' · entradas=' + document.querySelectorAll('input[type=file]').length +
+           (señal ? ' · cambio tardío: ' + señal : ''));
+  }
 
   // Pegar: si el motor no le pasa nada a la página —ni tipos ni ficheros—, es
   // que lo del portapapeles no es texto y se lo ha guardado. Lo lee Rust.

@@ -175,7 +175,9 @@ fn main() {
             });
 
             shell::create(app.handle())?;
-            theme::apply_theme(app.handle());
+            // Solo la ventana: la vista recién creada ya lleva el tema, y
+            // `apply_theme` la recargaría (ver `theme`).
+            theme::apply_window_theme(app.handle());
             tray::create(app.handle())?;
             icon::apply(app.handle());
 

@@ -23,6 +23,16 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.6" date="2026-09-02">
+      <description>
+        <p>Los vídeos con reproducción automática vuelven a verse y el chat deja de clavarse: el MP4 con el índice al final se endereza en cuanto falla, no solo al pulsar reproducir, y un fallo definitivo detiene el reproductor en vez de dejarlo reintentando. Los GIF se reanudan al volver a la pantalla. Pegar una imagen ya no la envía por duplicado y arrastrar un fichero sobre un mensaje vuelve a adjuntarlo.</p>
+      </description>
+    </release>
+    <release version="0.4.5" date="2026-09-01">
+      <description>
+        <p>Identificadores de cuenta blindados, configuración guardada de forma atómica y recuperable, descargas simultáneas sin colisiones y órdenes internas atribuidas a la vista que las emite.</p>
+      </description>
+    </release>
     <release version="0.4.4" date="2026-08-31">
       <description>
         <p>Mejoras de rendimiento y consumo de recursos: control de visibilidad en reproducción de vídeos (Viewport Throttling), eliminación de fugas de memoria RAM en blobs multimedia y manejo no destructivo de errores de reproducción.</p>

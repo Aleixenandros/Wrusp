@@ -161,7 +161,139 @@ EMPUJE
 </script>
 "#;
 
+/// Maqueta 4 — el fallo de la 0.4.3 a la 0.4.5: WhatsApp se queda el pegado y
+/// abre su previsualizador, pero este no lleva ningún marcado que Wrusp
+/// reconozca. Antes, al no verlo, se seguía probando el soltado y las entradas
+/// de fichero, y cada vía añadía la misma imagen: las fotos se enviaban por
+/// duplicado. Un pegado que WhatsApp toma (`preventDefault`) es un pegado
+/// hecho, se vea o no.
+const PEGADO_SIN_ICONO: &str = r#"
+<div id="app">
+  <div id="main"><div id="caja" contenteditable="true">escribe aquí</div></div>
+  <input id="medios" type="file" accept="image/*,video/*" style="display:none">
+  <input id="documentos" type="file" style="display:none">
+  <div id="previsualizador" style="display:none"><button>Vale</button></div>
+</div>
+<script>SCRIPT</script>
+<script>
+EMPUJE
+  let adjuntos = 0;
+  const abrir = () => { adjuntos++; document.getElementById('previsualizador').style.display = 'block'; };
+  // Todas las vías adjuntan, como en WhatsApp: si Wrusp usa más de una, se nota.
+  document.addEventListener('paste', (e) => {
+    if (!e.clipboardData || !e.clipboardData.files.length) return;
+    e.preventDefault();
+    abrir();
+  });
+  for (const tipo of ['dragenter', 'dragover']) document.addEventListener(tipo, (e) => e.preventDefault(), true);
+  document.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer && e.dataTransfer.files.length) abrir(); }, true);
+  for (const id of ['medios', 'documentos'])
+    document.getElementById(id).addEventListener('change', function () { if (this.files.length) abrir(); });
+
+  (async () => {
+    document.getElementById('caja').focus();
+    empujar('captura.png', 'image/png', 'unos bytes de captura');
+    await window.__wruspEntregar(-1, -1);   // pegado: sin punto donde soltar
+    informe([
+      ['se adjunta por el pegado', adjuntos > 0],
+      ['y una sola vez, aunque no se reconozca el previsualizador', adjuntos === 1],
+      ['queda anotado como pegado', anotado.some((a) => a.startsWith('pegado aceptado'))],
+    ], 'adjuntos=' + adjuntos + ' · registro: ' + anotado.join(' / '));
+  })();
+</script>
+"#;
+
+/// Maqueta 5 — la capa «Suelta aquí»: WhatsApp la monta al entrar el arrastre
+/// y es ella la que escucha el `drop`. En el registro real el fichero se soltó
+/// sobre un enlace de un mensaje y no llegó a ninguna parte: el `drop` tiene
+/// que ir sobre lo que haya bajo el ratón *después* del `dragenter`. El botón
+/// de enviar lleva aquí el marcado nuevo, para que la confirmación lo vea.
+const CAPA_SUELTA_AQUI: &str = r#"
+<div id="app">
+  <div id="main"><p id="mensaje">Un <a href="/" id="enlace">enlace</a> en un mensaje</p></div>
+  <input id="documentos" type="file" style="display:none">
+  <div id="previsualizador" style="display:none"><span data-icon="wds-ic-send-filled" style="display:inline-block;width:24px;height:24px"></span></div>
+</div>
+<script>SCRIPT</script>
+<script>
+EMPUJE
+  let adjuntos = 0;
+  let porDonde = '';
+  const abrir = (via) => { adjuntos++; porDonde = porDonde || via; document.getElementById('previsualizador').style.display = 'block'; };
+  let capa = null;
+  document.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    if (capa) return;
+    capa = document.createElement('div');
+    capa.id = 'suelta-aqui';
+    capa.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.3)';
+    capa.addEventListener('dragover', (e) => e.preventDefault());
+    capa.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files.length) abrir('capa');
+    });
+    document.body.appendChild(capa);
+  }, true);
+  document.addEventListener('dragover', (e) => e.preventDefault(), true);
+  // El documento corta el evento pero no adjunta: solo la capa adjunta.
+  document.addEventListener('drop', (e) => e.preventDefault(), true);
+  document.getElementById('documentos').addEventListener('change', function () { if (this.files.length) abrir('entrada'); });
+
+  (async () => {
+    const enlace = document.getElementById('enlace').getBoundingClientRect();
+    empujar('Informe.pdf', 'application/pdf', 'no soy un pdf de verdad');
+    await window.__wruspEntregar(Math.round(enlace.left + 4), Math.round(enlace.top + 4));
+    informe([
+      ['se adjunta', adjuntos > 0],
+      ['por la capa de soltado, no por la puerta de atrás', porDonde === 'capa'],
+      ['y una sola vez', adjuntos === 1],
+      ['se reconoce el botón de enviar nuevo', anotado.some((a) => a.startsWith('soltado aceptado') && a.includes('botón de enviar'))],
+    ], 'adjuntos=' + adjuntos + ' por=' + (porDonde || 'ninguna') + ' · registro: ' + anotado.join(' / '));
+  })();
+</script>
+"#;
+
+/// Maqueta 6 — dos Ctrl+V seguidos, el segundo antes de que termine el
+/// primero. En el registro real las dos entregas se solapaban y se pisaban.
+/// Mientras hay una en curso, la siguiente se descarta.
+const DOS_ENTREGAS_SEGUIDAS: &str = r#"
+<div id="app">
+  <div id="main"><div id="caja" contenteditable="true">escribe aquí</div></div>
+  <input id="medios" type="file" accept="image/*,video/*" style="display:none">
+  <div id="previsualizador" style="display:none"><span data-icon="send" style="display:inline-block;width:24px;height:24px"></span></div>
+</div>
+<script>SCRIPT</script>
+<script>
+EMPUJE
+  let adjuntos = 0;
+  // WhatsApp tarda en abrir el previsualizador: el segundo pegado llega antes.
+  document.addEventListener('paste', (e) => {
+    if (!e.clipboardData || !e.clipboardData.files.length) return;
+    e.preventDefault();
+    adjuntos++;
+    setTimeout(() => { document.getElementById('previsualizador').style.display = 'block'; }, 400);
+  });
+  for (const tipo of ['dragenter', 'dragover', 'drop']) document.addEventListener(tipo, (e) => e.preventDefault(), true);
+  document.getElementById('medios').addEventListener('change', function () { if (this.files.length) adjuntos++; });
+
+  (async () => {
+    document.getElementById('caja').focus();
+    empujar('captura.png', 'image/png', 'primera');
+    const primera = window.__wruspEntregar(-1, -1);
+    await new Promise((listo) => setTimeout(listo, 50));
+    empujar('captura.png', 'image/png', 'segunda');
+    await window.__wruspEntregar(-1, -1);
+    await primera;
+    informe([
+      ['solo se adjunta una vez', adjuntos === 1],
+      ['la segunda entrega se descarta y queda anotado', anotado.some((a) => a.startsWith('hay una entrega en curso'))],
+    ], 'adjuntos=' + adjuntos + ' · registro: ' + anotado.join(' / '));
+  })();
+</script>
+"#;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
+    let nombre_para_tiempo = nombre;
     let pagina = format!(
         "<!doctype html><meta charset=\"utf-8\">{INFORME}{}",
         maqueta
@@ -181,7 +313,15 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
     ventana.add(&vista);
     ventana.show_all();
 
+    // El temporizador se retira en cuanto la maqueta informa, y la ventana se
+    // cierra al terminar: si no, una maqueta que tarda deja su temporizador
+    // vivo y su página en marcha, y ambos se cuelan en la siguiente
+    // (main_quit a destiempo, «FALLO» atribuido a quien no era).
+    let temporizador: std::rc::Rc<std::cell::Cell<Option<gtk::glib::SourceId>>> =
+        std::rc::Rc::new(std::cell::Cell::new(None));
+
     let nombre = nombre.to_string();
+    let temporizador_informe = temporizador.clone();
     vista.connect_title_notify(move |v| {
         let Some(titulo) = v.title() else { return };
         let Some(msg) = titulo.strip_prefix("WRUSP:") else {
@@ -194,19 +334,32 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
         if msg.starts_with("HAY FALLOS") {
             fallos.set(fallos.get() + 1);
         }
+        if let Some(id) = temporizador_informe.take() {
+            id.remove();
+        }
         gtk::main_quit();
     });
     vista.load_html(&pagina, Some("http://localhost/"));
 
-    gtk::glib::timeout_add_seconds_local(30, move || {
+    let nombre_tiempo = nombre_para_tiempo.to_string();
+    temporizador.set(Some(gtk::glib::timeout_add_seconds_local(30, move || {
         // Que la maqueta no conteste es un fallo como cualquier otro: casi
         // siempre significa que el script lanzó y no llegó a informar.
+        println!("\n── {nombre_tiempo}");
         println!("   FALLO (tiempo agotado: la maqueta no llegó a informar)");
         sin_respuesta.set(sin_respuesta.get() + 1);
         gtk::main_quit();
         gtk::glib::ControlFlow::Break
-    });
+    })));
     gtk::main();
+    if let Some(id) = temporizador.take() {
+        id.remove();
+    }
+    // Fuera la página: que no siga reproduciendo ni informando por detrás.
+    vista.load_html("", None);
+    unsafe {
+        ventana.destroy();
+    }
 }
 
 fn main() {
@@ -227,6 +380,17 @@ fn main() {
         ELIGE_LA_ENTRADA,
         fallos.clone(),
     );
+    correr(
+        "WhatsApp toma el pegado pero su previsualizador no se reconoce",
+        PEGADO_SIN_ICONO,
+        fallos.clone(),
+    );
+    correr(
+        "La capa «Suelta aquí» es la que escucha el drop",
+        CAPA_SUELTA_AQUI,
+        fallos.clone(),
+    );
+    correr("Dos Ctrl+V seguidos", DOS_ENTREGAS_SEGUIDAS, fallos.clone());
     println!();
     if fallos.get() > 0 {
         println!("{} maqueta(s) con fallos", fallos.get());

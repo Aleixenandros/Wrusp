@@ -407,6 +407,20 @@ pub fn fix_large_mp4_blobs_script() -> String {
   // ── Puente con la página ─────────────────────────────────────────────────
 
   const esMedio = /^(video\/|audio\/|application\/mp4|application\/octet-stream)/i;
+  // Un blob sin tipo puede ser un vídeo —WhatsApp no siempre lo etiqueta—,
+  // pero por debajo de este tamaño cabe entero en el búfer del motor y no hay
+  // nada que reordenar: miniaturas, stickers y notas de voz cortas se quedan
+  // fuera y no ocupan sitio en el mapa.
+  const MIN_SIN_TIPO = 64 * 1024;
+  // Copias reordenadas vivas como mucho: son la única memoria que añade Wrusp
+  // (el blob original lo retiene la propia URL de WhatsApp hasta que la
+  // revoca). Al pasar del tope se revoca la más antigua que ningún
+  // reproductor conectado esté usando; si hace falta otra vez, se regenera.
+  // La 0.4.4 acotaba el mapa de candidatos entero, y con ello expulsaba
+  // vídeos que WhatsApp aún no había reproducido: al pulsarlos ya no eran
+  // candidatos y fallaban sin remedio.
+  const MAX_ARREGLADAS = 16;
+
   const crearUrl = URL.createObjectURL;
   const revocarUrl = URL.revokeObjectURL;
   const reproducirNativo = HTMLMediaElement.prototype.play;
@@ -415,49 +429,83 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const descriptorPrecarga = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');
   const ponerAtributo = Element.prototype.setAttribute;
 
-  // Límite máximo de candidatos retenidos en memoria (LRU) para evitar fugas de RAM.
-  const MAX_CANDIDATOS = 35;
-  const candidatos = new Map();   // url del blob → { blob, arreglada, trabajo }
-  const fallidas = new Set();     // urls que ya reventaron: no se reintentan
+  const candidatos = new Map();     // url del blob → { blob, arreglada, trabajo }
+  const porArreglada = new Map();   // url reordenada → url original
+  const arregladas = [];            // urls originales con copia viva, de vieja a nueva
+  const fallidas = new Set();       // urls que ya reventaron: no se reintentan
   const vigilados = new WeakSet();
-  const enObras = new WeakSet();  // medios a la espera de su fuente reordenada
+  const enObras = new WeakSet();    // medios a la espera de su fuente reordenada
+  const reparados = new WeakSet();  // medios a los que ya se les cambió la fuente tras un fallo
+  const pausadosPorWrusp = new WeakSet();
 
   const anotar = (texto) => {
     if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
   };
 
-  function registrarCandidato(url, obj) {
-    if (candidatos.size >= MAX_CANDIDATOS) {
-      const primeraClave = candidatos.keys().next().value;
-      if (primeraClave) {
-        const vieja = candidatos.get(primeraClave);
-        if (vieja && vieja.arreglada) {
-          try { revocarUrl.call(URL, vieja.arreglada); } catch (e) {}
-        }
-        candidatos.delete(primeraClave);
+  const escapar = (url) => (window.CSS && CSS.escape) ? CSS.escape(url) : url.replace(/"/g, '\\"');
+  const enUso = (url) => !!url && !!document.querySelector(
+    'video[src="' + escapar(url) + '"], audio[src="' + escapar(url) + '"], source[src="' + escapar(url) + '"]');
+
+  function recordarArreglada(url) {
+    arregladas.push(url);
+    while (arregladas.length > MAX_ARREGLADAS) {
+      const i = arregladas.findIndex((u) => {
+        const e = candidatos.get(u);
+        return !e || !enUso(e.arreglada);
+      });
+      if (i < 0) break; // todas en uso: se espera
+      const [vieja] = arregladas.splice(i, 1);
+      const entrada = candidatos.get(vieja);
+      if (entrada && entrada.arreglada) {
+        porArreglada.delete(entrada.arreglada);
+        try { revocarUrl.call(URL, entrada.arreglada); } catch (e) { /* ya no existía */ }
+        entrada.arreglada = null;
+        entrada.trabajo = null;
       }
     }
-    candidatos.set(url, obj);
   }
 
-  // Observador de visibilidad para suspender la decodificación de vídeos fuera del viewport
+  // ── Visibilidad ──────────────────────────────────────────────────────────
+  // Un vídeo con autoplay fuera de la pantalla sigue decodificando; con
+  // decenas de GIF en un chat eso satura la CPU. Se pausa al salir del
+  // viewport y —esto faltaba en la 0.4.4— se reanuda al volver: si no, cada
+  // GIF que se desplazaba fuera quedaba congelado en un fotograma para
+  // siempre. Solo se reanuda lo que Wrusp pausó, no lo que paró el usuario.
   let visorInterseccion = null;
   if (typeof IntersectionObserver === 'function') {
     visorInterseccion = new IntersectionObserver((entradas) => {
       for (const entrada of entradas) {
         const medio = entrada.target;
-        if (!(medio instanceof HTMLMediaElement)) continue;
+        if (!(medio instanceof HTMLVideoElement)) continue;
+        if (!medio.isConnected) {
+          visorInterseccion.unobserve(medio);
+          pausadosPorWrusp.delete(medio);
+          continue;
+        }
         if (!entrada.isIntersecting) {
-          if (medio instanceof HTMLVideoElement && !medio.paused && medio.autoplay) {
-            try { medio.pause(); } catch (e) {}
+          if (medio.autoplay && !medio.paused) {
+            pausadosPorWrusp.add(medio);
+            try { medio.pause(); } catch (e) { /* el medio ya no está */ }
+          }
+        } else if (pausadosPorWrusp.has(medio)) {
+          pausadosPorWrusp.delete(medio);
+          if (medio.paused && !medio.ended) {
+            try {
+              const p = medio.play();
+              if (p && p.catch) p.catch(() => {});
+            } catch (e) { /* sin gesto de usuario no siempre deja */ }
           }
         }
       }
     }, { rootMargin: '50px' });
   }
 
+  // Solo los vídeos con autoplay, que son los únicos que se pausan. Observar
+  // todos los demás no aportaba nada y tenía un precio medido en el banco:
+  // un <video> sin tamaño propio observado justo al llamar a play() se
+  // quedaba cargando sin llegar a tener metadatos (readyState 0, stalled).
   function vigilarVisibilidad(medio) {
-    if (visorInterseccion && medio instanceof HTMLVideoElement) {
+    if (visorInterseccion && medio instanceof HTMLVideoElement && medio.autoplay) {
       visorInterseccion.observe(medio);
     }
   }
@@ -496,9 +544,40 @@ pub fn fix_large_mp4_blobs_script() -> String {
       descriptorPrecarga.set.call(medio, 'none');
   }
 
-  // Un fallo de decodificación deja al motor y a WhatsApp reintentando, y cada
-  // intento vuelve a llenar el registro con miles de errores por segundo: eso
-  // es lo que dejaba la ventana sin responder. Se corta en el primer fallo.
+  // El nodo que lleva la URL puede ser el propio medio o un <source> suyo.
+  function portador(medio) {
+    if (candidatos.has(String(urlDe(medio) || ''))) return medio;
+    for (const fuente of medio.querySelectorAll('source[src]'))
+      if (candidatos.has(String(urlDe(fuente) || ''))) return fuente;
+    return null;
+  }
+
+  // Desmonta el pipeline de un medio que no se puede reproducir. Sin esto el
+  // motor y WhatsApp se quedan reintentando, y cada intento vuelve a llenar
+  // el registro con miles de errores por segundo: eso es lo que dejaba la
+  // ventana sin responder (0.4.3). Se quita la fuente también de los <source>
+  // hijos: si no, `load()` la vuelve a elegir y el bucle sigue.
+  function detener(medio, url, mensaje) {
+    if (url) fallidas.add(url);
+    try {
+      medio.pause();
+      medio.removeAttribute('src');
+      for (const fuente of medio.querySelectorAll('source[src]')) fuente.removeAttribute('src');
+      medio.load();
+    } catch (e) { /* el medio ya no está */ }
+    anotar(mensaje);
+  }
+
+  // Códigos de MediaError: 1 abortado, 2 red, 3 decodificación, 4 fuente no
+  // admitida. El 4 es justo el que da GStreamer cuando no digiere el MP4 con
+  // el índice al final; la 0.4.4 lo trataba como transitorio y dejaba a
+  // WhatsApp reintentando sin fin, que es lo que volvía a clavar el chat.
+  //
+  // Si la fuente es un blob candidato que aún no se ha reordenado, el fallo
+  // se repara aquí mismo: es el camino de los vídeos con autoplay (GIF y
+  // previsualizaciones), que cargan al recibir la fuente y fallan antes de
+  // que nadie llame a play(). Si ya estaba reordenada, o no era candidata,
+  // no hay más que hacer y se detiene.
   function vigilarFallo(medio) {
     if (vigilados.has(medio)) return;
     vigilados.add(medio);
@@ -507,21 +586,41 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // aquí lo arregla el cambio de fuente que viene detrás.
       if (enObras.has(medio)) return;
       const codigo = medio.error ? medio.error.code : 0;
-      const url = String(urlDe(medio) || '');
+      const nodo = portador(medio);
+      const url = String(urlDe(nodo || medio) || '');
+      const entrada = nodo ? candidatos.get(url) : candidatos.get(porArreglada.get(url));
       // Desmontar el pipeline borra `error`, y sin este rastro no hay forma de
       // saber después qué pasó (el banco lo lee de aquí).
       window.__wruspUltimoFallo = { codigo, url };
-      if (codigo === 3 || codigo === 0) {
-        if (url) fallidas.add(url);
-        try {
-          medio.pause();
-          medio.removeAttribute('src');
-          medio.load(); // desmonta el pipeline; sin esto el bucle sigue
-        } catch (e) { /* el medio ya no está */ }
-        anotar('medio con fallo de decodificación (código ' + codigo + '): pipeline detenido');
-      } else {
-        anotar('medio con aviso/error de transporte o red (código ' + codigo + ')');
+      const detalle = ' (código ' + codigo + ', red ' + medio.networkState + ', datos ' + medio.readyState
+        + ', ' + (!entrada ? 'sin blob candidato' : nodo ? 'blob candidato sin reordenar' : 'blob ya reordenado')
+        + (entrada && entrada.blob ? ', ' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') : '')
+        + ')';
+      if (codigo === 1 || codigo === 2) {
+        anotar('medio con aviso de transporte o red' + detalle);
+        return;
       }
+      if (nodo && entrada && !entrada.arreglada && !reparados.has(medio)) {
+        reparados.add(medio);
+        const seguir = medio.autoplay || !medio.paused;
+        enObras.add(medio);
+        anotar('medio con fallo' + detalle + ': se reordena y se reintenta');
+        preparar(url)
+          .then((definitiva) => {
+            if (definitiva === url) {
+              enObras.delete(medio);
+              detener(medio, url, 'el blob no se ha podido reordenar: pipeline detenido');
+              return;
+            }
+            return usar(medio, nodo, definitiva).then(() => {
+              enObras.delete(medio);
+              if (seguir && medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
+            });
+          })
+          .catch(() => enObras.delete(medio));
+        return;
+      }
+      detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
     }, true);
   }
 
@@ -560,6 +659,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
         }
         const tipo = entrada.blob.type || 'video/mp4';
         entrada.arreglada = crearUrl.call(URL, new Blob([arreglado], { type: tipo }));
+        porArreglada.set(entrada.arreglada, url);
+        recordarArreglada(url);
         anotar('vídeo reordenado (' + Math.round(arreglado.byteLength / 1024) + ' KiB)');
         return entrada.arreglada;
       } catch (e) {
@@ -569,49 +670,76 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return entrada.trabajo;
   }
 
+  // Metadatos de la fuente actual, o `false` si llega un error o se agota el
+  // plazo. Para un blob local llegan en milisegundos.
+  function esperarMetadatos(medio, ms) {
+    if (medio.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve(true);
+    return new Promise((listo) => {
+      let temporizador = 0;
+      const fin = (ok) => {
+        clearTimeout(temporizador);
+        medio.removeEventListener('loadedmetadata', bien);
+        medio.removeEventListener('error', mal);
+        listo(ok);
+      };
+      const bien = () => fin(true);
+      const mal = () => fin(false);
+      temporizador = setTimeout(() => fin(false), ms);
+      medio.addEventListener('loadedmetadata', bien);
+      medio.addEventListener('error', mal);
+    });
+  }
+
   // Sustituye la fuente conservando posición y estado, como haría una recarga
-  // normal del propio medio.
+  // normal del propio medio, y no devuelve el control hasta que la fuente
+  // nueva tiene metadatos.
+  //
+  // El orden importa: primero la fuente nueva y después la precarga. Al revés,
+  // devolver la precarga con la fuente vieja todavía puesta arrancaba la
+  // carga del blob original, y abortarla un instante después con `load()`
+  // dejaba a veces la fuente nueva cargando sin llegar a tener metadatos
+  // (medido en el banco: readyState 0, «stalled», la promesa de play() sin
+  // resolverse nunca; pasaba también con el script de la 0.4.3). Por si el
+  // motor se atasca igualmente, se espera a los metadatos y, si no llegan, se
+  // vuelve a cargar una vez.
   function usar(medio, nodo, urlNueva) {
     if (urlDe(nodo) === urlNueva) return Promise.resolve();
     const posicion = Number.isFinite(medio.currentTime) ? medio.currentTime : 0;
+    ponerUrl(nodo, urlNueva);
     if (descriptorPrecarga && descriptorPrecarga.set)
       descriptorPrecarga.set.call(medio, 'auto');
-    ponerUrl(nodo, urlNueva);
     medio.load();
-    if (posicion <= 0) return Promise.resolve();
-    return new Promise((listo) => {
-      const colocar = () => {
+    return esperarMetadatos(medio, 2500)
+      .then((ok) => {
+        if (ok || medio.readyState > 0 || urlDe(nodo) !== urlNueva || medio.error) return ok;
+        anotar('la fuente reordenada no arranca (red ' + medio.networkState + '): se vuelve a cargar');
+        medio.load();
+        return esperarMetadatos(medio, 4000);
+      })
+      .then(() => {
+        if (posicion <= 0) return;
         try {
           if (Number.isFinite(medio.duration))
             medio.currentTime = Math.min(posicion, Math.max(0, medio.duration - 0.001));
         } catch (e) { /* el medio cambió por debajo */ }
-        listo();
-      };
-      if (medio.readyState >= HTMLMediaElement.HAVE_METADATA) colocar();
-      else medio.addEventListener('loadedmetadata', colocar, { once: true });
-    });
-  }
-
-  // El nodo que lleva la URL puede ser el propio medio o un <source> suyo.
-  function portador(medio) {
-    if (candidatos.has(String(urlDe(medio) || ''))) return medio;
-    for (const fuente of medio.querySelectorAll('source[src]'))
-      if (candidatos.has(String(urlDe(fuente) || ''))) return fuente;
-    return null;
+      });
   }
 
   HTMLMediaElement.prototype.play = function () {
     const medio = this;
     vigilarFallo(medio);
     vigilarVisibilidad(medio);
-    if (descriptorPrecarga && descriptorPrecarga.set)
-      descriptorPrecarga.set.call(medio, 'auto');
     const nodo = portador(medio);
     if (!nodo) {
       if (fallidas.has(String(urlDe(medio) || '')))
         return Promise.reject(new DOMException('medio descartado tras fallar', 'AbortError'));
+      if (descriptorPrecarga && descriptorPrecarga.set)
+        descriptorPrecarga.set.call(medio, 'auto');
       return reproducirNativo.call(medio);
     }
+    // Con un blob candidato la precarga se devuelve en `usar`, ya con la
+    // fuente definitiva puesta: arrancar aquí la carga del original para
+    // abortarla enseguida es lo que dejaba la fuente nueva atascada.
     const url = String(urlDe(nodo));
     enObras.add(medio);
     return preparar(url)
@@ -644,8 +772,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   URL.createObjectURL = function (objeto) {
     const url = crearUrl.call(this, objeto);
-    if (objeto instanceof Blob && (objeto.type ? esMedio.test(objeto.type) : true))
-      registrarCandidato(url, { blob: objeto, arreglada: null, trabajo: null });
+    if (objeto instanceof Blob) {
+      const candidato = objeto.type ? esMedio.test(objeto.type) : objeto.size >= MIN_SIN_TIPO;
+      if (candidato) candidatos.set(url, { blob: objeto, arreglada: null, trabajo: null });
+    }
     return url;
   };
 
@@ -655,7 +785,12 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (entrada) {
       // La copia reordenada solo la conoce Wrusp: si nadie revoca la original,
       // nadie la revocaría nunca.
-      if (entrada.arreglada) revocarUrl.call(this, entrada.arreglada);
+      if (entrada.arreglada) {
+        porArreglada.delete(entrada.arreglada);
+        revocarUrl.call(this, entrada.arreglada);
+      }
+      const i = arregladas.indexOf(clave);
+      if (i >= 0) arregladas.splice(i, 1);
       candidatos.delete(clave);
       fallidas.delete(clave);
     }
@@ -690,17 +825,25 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (esFuente) registrar(this);
   };
 
-  // Y los que llegan al documento con la fuente ya puesta.
+  // Y los que llegan al documento con la fuente ya puesta; los que se van,
+  // se dejan de vigilar.
   function registrarArbol(raiz) {
     if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
     if (raiz.matches('video[src], audio[src], source[src]')) registrar(raiz);
     for (const nodo of raiz.querySelectorAll('video[src], audio[src], source[src]'))
       registrar(nodo);
   }
+  function olvidarArbol(raiz) {
+    if (!visorInterseccion || !raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
+    if (raiz instanceof HTMLVideoElement) visorInterseccion.unobserve(raiz);
+    for (const nodo of raiz.querySelectorAll('video')) visorInterseccion.unobserve(nodo);
+  }
 
   new MutationObserver((mutaciones) => {
-    for (const mutacion of mutaciones)
+    for (const mutacion of mutaciones) {
       for (const nodo of mutacion.addedNodes) registrarArbol(nodo);
+      for (const nodo of mutacion.removedNodes) olvidarArbol(nodo);
+    }
   }).observe(document, { childList: true, subtree: true });
 })();"#
         .to_string()

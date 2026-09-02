@@ -66,7 +66,20 @@ pub fn set_theme(app: AppHandle, theme: ThemeMode) -> Result<(), String> {
     Ok(())
 }
 
-/// Aplica el tema actual a la ventana y a las vistas de WhatsApp abiertas.
+/// Aplica el tema a la ventana, sin tocar las vistas. Es lo que hace falta al
+/// arrancar: la vista de cuenta ya nace con el tema puesto por su script de
+/// inicialización, y recargarla aquí hacía que la primera cuenta cargase
+/// WhatsApp tres veces seguidas (creación, reinicio del proceso web y esta
+/// recarga).
+pub fn apply_window_theme(app: &AppHandle) {
+    let mode = app.state::<ConfigState>().0.lock().unwrap().theme;
+    if let Some(window) = app.get_window(shell::MAIN_WINDOW) {
+        let _ = window.set_theme(to_tauri_theme(mode));
+    }
+}
+
+/// Aplica el tema actual a la ventana y a las vistas de WhatsApp abiertas
+/// (recargándolas: WhatsApp lee la preferencia al arrancar).
 pub fn apply_theme(app: &AppHandle) {
     let mode = app.state::<ConfigState>().0.lock().unwrap().theme;
 
