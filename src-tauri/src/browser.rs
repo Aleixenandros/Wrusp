@@ -221,6 +221,13 @@ pub fn hide_webcodecs_script() -> String {
 
 /// Deja reproducibles los vídeos que WhatsApp sirve como `blob:`.
 ///
+/// Desde la 0.4.12 el vídeo llega al motor como `data:` URL (leída con
+/// `FileReader`, con tope de tamaño y pocas copias vivas): con vídeos reales
+/// volcados de un chat, el cargador de blobs de WebKitGTK 2.52 unas veces los
+/// rechazaba sin leer un byte, otras rompía al mover la barra y otras colgaba
+/// el proceso web; como `data:` arrancan y saltan (ADR-039). El remux de más
+/// abajo se conserva para los que además traen el índice al final.
+///
 /// WebKitGTK 2.52 entrega los blobs al demuxer a través de un búfer circular
 /// pequeño. Cuando el MP4 es mayor que ese búfer y trae su índice (`moov`) al
 /// final —la forma habitual en que WhatsApp entrega los vídeos—, `qtdemux`
@@ -501,7 +508,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
   // La 0.4.4 acotaba el mapa de candidatos entero, y con ello expulsaba
   // vídeos que WhatsApp aún no había reproducido: al pulsarlos ya no eran
   // candidatos y fallaban sin remedio.
-  const MAX_ARREGLADAS = 16;
+  const MAX_ARREGLADAS = 6;
+  // Por encima de esto el vídeo se queda como blob: la copia `data:` ocupa
+  // cuatro tercios del fichero en la página más lo que el motor decodifique.
+  const MAX_DATA = 64 * 1024 * 1024;
 
   const crearUrl = URL.createObjectURL;
   const revocarUrl = URL.revokeObjectURL;
@@ -525,9 +535,11 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
   };
 
-  const escapar = (url) => (window.CSS && CSS.escape) ? CSS.escape(url) : url.replace(/"/g, '\\"');
-  const enUso = (url) => !!url && !!document.querySelector(
-    'video[src="' + escapar(url) + '"], audio[src="' + escapar(url) + '"], source[src="' + escapar(url) + '"]');
+  // ¿Algún medio conectado lleva esta URL? Por comparación, no por selector:
+  // una `data:` de varios MB no cabe en un selector CSS.
+  const enUso = (url) => !!url && Array.prototype.some.call(
+    document.querySelectorAll('video, audio, source'),
+    (nodo) => nodo.isConnected && String(urlDe(nodo) || '') === url);
 
   function recordarArreglada(url) {
     arregladas.push(url);
@@ -541,7 +553,9 @@ pub fn fix_large_mp4_blobs_script() -> String {
       const entrada = candidatos.get(vieja);
       if (entrada && entrada.arreglada) {
         porArreglada.delete(entrada.arreglada);
-        try { revocarUrl.call(URL, entrada.arreglada); } catch (e) { /* ya no existía */ }
+        if (entrada.arreglada.indexOf('blob:') === 0) {
+          try { revocarUrl.call(URL, entrada.arreglada); } catch (e) { /* ya no existía */ }
+        }
         entrada.arreglada = null;
         entrada.definitiva = null;
         entrada.trabajo = null;
@@ -857,6 +871,26 @@ pub fn fix_large_mp4_blobs_script() -> String {
   // de 35 candidatos los expulsaba antes de que se notara; la 0.4.6 quitó el
   // tope y el bucle se llevó por delante cualquier chat con GIF (medido: 33 s
   // de CPU en una sesión de 30 s).
+  // Lectura nativa del blob como `data:` URL; para un vídeo de 10 MiB son
+  // unas decenas de milisegundos y no pasa por JavaScript byte a byte.
+  const comoDataUrl = (blob) => new Promise((listo, falla) => {
+    const lector = new FileReader();
+    lector.onload = () => listo(String(lector.result));
+    lector.onerror = () => falla(lector.error || new Error('FileReader'));
+    lector.readAsDataURL(blob);
+  });
+
+  // Deja lista la URL definitiva del blob y la guarda en `entrada.definitiva`
+  // **siempre**, aunque no haya nada que cambiar (ver el bucle de la 0.4.6).
+  //
+  // Un vídeo se entrega al motor como `data:` URL, reordenado antes si traía
+  // el índice al final. Medido con vídeos reales volcados de un chat (ADR-039):
+  // como `blob:`, WebKitGTK 2.52 unas veces los rechaza sin leer un byte
+  // («formato no admitido», red 3), otras arranca y rompe al mover la barra, y
+  // otras cuelga el proceso web entero; como `data:` arrancan, saltan en menos
+  // de 150 ms y siguen. El mismo fichero, la misma página, el mismo motor:
+  // solo cambia por dónde llegan los bytes al demuxer. `MediaSource` con el
+  // fichero entero también cuelga, así que no es alternativa.
   function preparar(url) {
     const entrada = candidatos.get(url);
     if (!entrada) return Promise.resolve(url);
@@ -865,25 +899,33 @@ pub fn fix_large_mp4_blobs_script() -> String {
     entrada.trabajo = (async () => {
       try {
         const motivo = await hayQueReordenar(entrada.blob);
-        if (motivo) {
+        let fuente = entrada.blob;
+        let nota = '';
+        if (!motivo) {
+          const bytes = await entrada.blob.arrayBuffer();
+          const arreglado = reordenar(bytes);
+          if (arreglado) {
+            fuente = new Blob([arreglado], { type: entrada.blob.type || 'video/mp4' });
+            nota = ', reordenado';
+          } else {
+            entrada.motivo = 'no reordenable';
+          }
+        } else {
           entrada.motivo = motivo;
+        }
+        // Solo vídeo (o un MP4 sin tipo declarado) y de tamaño razonable: el
+        // audio de las notas de voz nunca ha dado problemas como blob.
+        const esVideo = /^video\//i.test(entrada.blob.type)
+          || (!entrada.blob.type && !/^no es MP4/.test(entrada.motivo || ''));
+        if (!esVideo || fuente.size > MAX_DATA) {
           entrada.definitiva = url;
           return url;
         }
-        const bytes = await entrada.blob.arrayBuffer();
-        const arreglado = reordenar(bytes);
-        if (!arreglado) {
-          anotar('vídeo con el índice al final que no se ha podido reordenar');
-          entrada.motivo = 'no reordenable';
-          entrada.definitiva = url;
-          return url;
-        }
-        const tipo = entrada.blob.type || 'video/mp4';
-        entrada.arreglada = crearUrl.call(URL, new Blob([arreglado], { type: tipo }));
+        entrada.arreglada = await comoDataUrl(fuente);
         entrada.definitiva = entrada.arreglada;
         porArreglada.set(entrada.arreglada, url);
         recordarArreglada(url);
-        anotar('vídeo reordenado (' + Math.round(arreglado.byteLength / 1024) + ' KiB)');
+        anotar('vídeo entregado como data: (' + Math.round(fuente.size / 1024) + ' KiB' + nota + ')');
         return entrada.arreglada;
       } catch (e) {
         entrada.motivo = 'excepción al leerlo';
@@ -1013,7 +1055,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // nadie la revocaría nunca.
       if (entrada.arreglada) {
         porArreglada.delete(entrada.arreglada);
-        revocarUrl.call(this, entrada.arreglada);
+        if (entrada.arreglada.indexOf('blob:') === 0) revocarUrl.call(this, entrada.arreglada);
       }
       const i = arregladas.indexOf(clave);
       if (i >= 0) arregladas.splice(i, 1);

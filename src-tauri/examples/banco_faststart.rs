@@ -231,12 +231,15 @@ const ALGORITMO: &str = r#"
     v.src = url;
     try { await v.play(); } catch (e) { /* sin códec: da igual, interesa la URL */ }
     const definitiva = v.src;
-    // Sin cambio, o detenido por el propio script (quita el `src` cuando no hay
-    // nada que reordenar y el motor falla): no lo tocó.
+    // Sin cambio, o detenido por el propio script: no lo tocó. Desde la 0.4.12
+    // la fuente pasa a `data:` aunque no haya nada que reordenar, así que «no
+    // lo tocó» significa que los bytes son los mismos.
     if (definitiva === url || !definitiva) return null;
     try {
       const resp = await fetch(definitiva);
-      return new Uint8Array(await resp.arrayBuffer());
+      const nuevo = new Uint8Array(await resp.arrayBuffer());
+      if (nuevo.length === bytes.length && nuevo.every((b, i) => b === bytes[i])) return null;
+      return nuevo;
     } catch (e) {
       return null;
     }
@@ -469,7 +472,7 @@ const YA_ORDENADO: &str = r#"
     try { await v.play(); } catch (e) {}
     await new Promise((listo) => setTimeout(listo, 2000));
     informe([
-      ['la fuente no se toca', v.src === url],
+      ['la fuente pasa a data:', v.src.indexOf('data:') === 0],
       ['arranca y avanza', !v.paused && v.currentTime > 1],
       ['sin bucle de pausa/reproducción', pausas <= 2 && arranques <= 4],
       ['sin errores de medio', errores === 0],
@@ -591,6 +594,86 @@ CSP_META
 </script>
 "#;
 
+/// Maquetas 7a/7b/7c — la misma prueba con tres formas de entregar el vídeo
+/// al motor, cada una por separado para que un cuelgue de una no tape a las
+/// otras: `blob:` (lo que hace WhatsApp), `data:` (lo que hacía la 0.3.8) y
+/// `MediaSource` con el fichero entero. Se arranca, se salta al 60 % con la
+/// barra y se mira si sigue. Con `WRUSP_BANCO_FICHERO` y un vídeo real.
+const PRUEBA_SALTO: &str = r#"
+  const B64 = MP4_BASE64;
+  const espera = (ms) => new Promise((l) => setTimeout(l, ms));
+  const bytesDe = () => { const bruto = atob(B64); const b = new Uint8Array(bruto.length); for (let i = 0; i < bruto.length; i++) b[i] = bruto.charCodeAt(i); return b; };
+  async function probar(v, preparar) {
+    const diario = [];
+    v.addEventListener('error', () => diario.push('error' + (v.error && v.error.code) + '/red' + v.networkState));
+    v.addEventListener('stalled', () => diario.push('stalled'));
+    const t0 = performance.now();
+    try { await preparar(v); } catch (e) { diario.push('prep:' + ((e && e.message) || e)); }
+    try { await v.play(); } catch (e) { diario.push('play:' + e.name); }
+    await espera(3000);
+    const antesSalto = v.currentTime;
+    const destino = Number.isFinite(v.duration) ? Math.min(v.duration * 0.6, v.duration - 1) : 5;
+    const tSalto = performance.now();
+    let seeked = false;
+    v.addEventListener('seeked', () => { seeked = true; diario.push('seeked@' + Math.round(performance.now() - tSalto) + 'ms'); }, { once: true });
+    try { v.currentTime = destino; } catch (e) { diario.push('seek:' + e.name); }
+    await espera(4000);
+    const trasSalto = v.currentTime;
+    informe([
+      ['arranca', antesSalto > 0.5],
+      ['salta con la barra', seeked && trasSalto > destino - 0.5],
+      ['sigue tras el salto', !v.paused && !v.error && trasSalto > destino],
+    ], 'antes=' + antesSalto.toFixed(1) + ' destino=' + destino.toFixed(1) + ' después=' + trasSalto.toFixed(1)
+      + ' ' + diario.join(',') + ' (' + Math.round(performance.now() - t0) + ' ms)');
+  }
+"#;
+
+const SALTO_BLOB: &str = r#"
+<video id="v" muted playsinline style="width:240px"></video>
+<script>SCRIPT</script>
+<script>
+PRUEBA_SALTO
+  probar(document.getElementById('v'), async (v) => {
+    v.src = URL.createObjectURL(new Blob([bytesDe()], { type: 'video/mp4' }));
+  });
+</script>
+"#;
+
+const SALTO_DATA: &str = r#"
+<video id="v" muted playsinline style="width:240px"></video>
+<script>SCRIPT</script>
+<script>
+PRUEBA_SALTO
+  probar(document.getElementById('v'), async (v) => {
+    v.src = 'data:video/mp4;base64,' + B64;
+  });
+</script>
+"#;
+
+const SALTO_MSE: &str = r#"
+<video id="v" muted playsinline style="width:240px"></video>
+<script>SCRIPT</script>
+<script>
+PRUEBA_SALTO
+  probar(document.getElementById('v'), (v) => new Promise((listo, falla) => {
+    if (typeof MediaSource !== 'function') return falla(new Error('sin MediaSource'));
+    const tipo = 'video/mp4; codecs="avc1.64001f, mp4a.40.2"';
+    if (!MediaSource.isTypeSupported(tipo)) return falla(new Error('tipo no admitido'));
+    const ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', () => {
+      try {
+        const sb = ms.addSourceBuffer(tipo);
+        sb.addEventListener('updateend', () => { try { ms.endOfStream(); } catch (e) {} listo(); }, { once: true });
+        sb.addEventListener('error', () => falla(new Error('SourceBuffer error')), { once: true });
+        sb.appendBuffer(bytesDe());
+      } catch (e) { falla(e); }
+    }, { once: true });
+    setTimeout(() => falla(new Error('sourceopen no llegó')), 5000);
+  }));
+</script>
+"#;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
     let nombre_para_tiempo = nombre;
     // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
@@ -660,18 +743,27 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
 
     let nombre_tiempo = nombre_para_tiempo.to_string();
     let temporizador_vencido = temporizador.clone();
-    temporizador.set(Some(gtk::glib::timeout_add_seconds_local(30, move || {
-        // Al vencer, GLib retira la fuente por su cuenta: que nadie intente
-        // retirarla otra vez después.
-        temporizador_vencido.set(None);
-        // Que la maqueta no conteste es un fallo como cualquier otro: casi
-        // siempre significa que el script lanzó y no llegó a informar.
-        println!("\n── {nombre_tiempo}");
-        println!("   FALLO (tiempo agotado: la maqueta no llegó a informar)");
-        sin_respuesta.set(sin_respuesta.get() + 1);
-        gtk::main_quit();
-        gtk::glib::ControlFlow::Break
-    })));
+    // `WRUSP_BANCO_ESPERA=segundos` alarga el plazo: las maquetas con vídeos
+    // reales de varios MB y varias pruebas seguidas no caben en 30 s.
+    let espera: u32 = std::env::var("WRUSP_BANCO_ESPERA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    temporizador.set(Some(gtk::glib::timeout_add_seconds_local(
+        espera,
+        move || {
+            // Al vencer, GLib retira la fuente por su cuenta: que nadie intente
+            // retirarla otra vez después.
+            temporizador_vencido.set(None);
+            // Que la maqueta no conteste es un fallo como cualquier otro: casi
+            // siempre significa que el script lanzó y no llegó a informar.
+            println!("\n── {nombre_tiempo}");
+            println!("   FALLO (tiempo agotado: la maqueta no llegó a informar)");
+            sin_respuesta.set(sin_respuesta.get() + 1);
+            gtk::main_quit();
+            gtk::glib::ControlFlow::Break
+        },
+    )));
     gtk::main();
     if let Some(id) = temporizador.take() {
         id.remove();
@@ -737,6 +829,21 @@ fn main() {
                     &DIAGNOSTICO.replace("MP4_BASE64", &incrustado).replace("CSP_META", &meta),
                     fallos.clone(),
                 );
+            }
+            if std::env::var_os("WRUSP_BANCO_FICHERO").is_some() {
+                for (nombre, maqueta) in [
+                    ("Salto con la barra: blob:", SALTO_BLOB),
+                    ("Salto con la barra: data:", SALTO_DATA),
+                    ("Salto con la barra: MediaSource", SALTO_MSE),
+                ] {
+                    correr(
+                        nombre,
+                        &maqueta
+                            .replace("PRUEBA_SALTO", PRUEBA_SALTO)
+                            .replace("MP4_BASE64", &incrustado),
+                        fallos.clone(),
+                    );
+                }
             }
             if let Some(ordenado) = video_ordenado() {
                 let incrustado = format!("'{}'", base64(&ordenado));

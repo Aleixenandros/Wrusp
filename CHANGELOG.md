@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.12] — 2026-09-03
+
+### Corregido
+
+- **Los vídeos de los chats se reproducen, se puede mover la barra y el chat no se cuelga.** Con siete vídeos reales volcados de un chat y el banco dentro de WebKitGTK quedó medido dónde estaba el fallo: no en los ficheros (`ffprobe`, GStreamer y el propio banco los reproducen), sino en el cargador de blobs del motor. Entregados como `blob:`, que es como los sirve WhatsApp, unas veces el motor los rechazaba sin leer un byte («formato no admitido»), otras arrancaban y rompían al mover la barra, y otras colgaban el proceso web entero, que es lo que se notaba como aplicación clavada. Los mismos bytes entregados como `data:` URL arrancan, saltan a cualquier punto en menos de 150 ms y siguen. Wrusp entrega ahora cada vídeo como `data:` en el momento de reproducirlo, leído de forma nativa con `FileReader`, con tope de 64 MiB por vídeo y como mucho seis copias vivas, y reordenado antes si traía el índice al final. `MediaSource` con el fichero entero también colgaba el motor, así que no era alternativa. Las notas de voz siguen como `blob:`, que nunca ha fallado con audio.
+
+### Añadido
+
+- **Tres maquetas de salto en `banco_faststart`** (`WRUSP_BANCO_FICHERO` + `WRUSP_BANCO_SOLO=Salto`): el mismo vídeo real entregado como `blob:`, como `data:` y por `MediaSource`, con salto al 60 % a mitad de reproducción. Es la prueba que separó el fichero del transporte. `WRUSP_BANCO_ESPERA=segundos` alarga el plazo por maqueta.
+
 ## [0.4.11] — 2026-09-03
 
 ### Corregido
