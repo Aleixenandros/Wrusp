@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.10] — 2026-09-03
+
+### Corregido
+
+- **El interruptor de guardar los vídeos que fallan tiene efecto inmediato.** La 0.4.9 lo leía una sola vez, al crear la vista de cada cuenta: activarlo con Wrusp abierto no hacía nada, ni siquiera tras F5, y solo valía si se activaba antes de arrancar. Ahora la página retiene siempre los últimos cinco vídeos que fallan y avisa; es Rust quien decide en ese instante, con el ajuste actual, si los guarda.
+
+### Añadido
+
+- **`WRUSP_BANCO_FICHERO=/ruta.mp4` en `banco_faststart`**: reproduce en el banco un vídeo cualquiera, por ejemplo uno guardado desde un chat, en vez del generado con ffmpeg.
+
 ## [0.4.9] — 2026-09-03
 
 ### Corregido

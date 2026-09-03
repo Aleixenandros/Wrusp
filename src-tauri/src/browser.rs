@@ -461,13 +461,16 @@ pub fn fix_large_mp4_blobs_script() -> String {
   }
 
   // Volcado a disco de los medios que fallan, para analizarlos con
-  // `gst-discoverer-1.0` o `ffprobe`. Solo si Wrusp arrancó con
-  // `WRUSP_GUARDAR_MEDIOS_FALLIDOS` (lo sabe la página por
-  // `__wruspGuardarFallos`): Rust pide los bytes por `__wruspLeerFallido`.
+  // `gst-discoverer-1.0` o `ffprobe`. La página retiene los últimos cinco y
+  // avisa; es Rust quien decide, con el interruptor de ajustes o la variable
+  // de entorno del momento, si los pide por `__wruspLeerFallido`. La 0.4.9
+  // fijaba la decisión en un script de arranque evaluado al crear la vista, y
+  // activar el interruptor después no servía de nada.
   const fallidosGuardados = new Map(); // id → blob
   let contadorFallidos = 0;
   function ofrecerVolcado(blob) {
-    if (!window.__wruspGuardarFallos || !blob || fallidosGuardados.size >= 5) return;
+    if (!blob) return;
+    while (fallidosGuardados.size >= 5) fallidosGuardados.delete(fallidosGuardados.keys().next().value);
     const id = 'f' + (++contadorFallidos);
     fallidosGuardados.set(id, blob);
     if (window.__wruspOrden) window.__wruspOrden('medio-fallido/' + id);

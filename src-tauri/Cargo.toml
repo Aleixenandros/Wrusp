@@ -1,6 +1,6 @@
 [package]
 name = "wrusp"
-version = "0.4.9"
+version = "0.4.10"
 description = "Cliente de escritorio no oficial de WhatsApp para Linux"
 authors = ["aleixenandros"]
 license = "Apache-2.0"

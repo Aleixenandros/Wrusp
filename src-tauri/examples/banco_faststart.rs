@@ -71,6 +71,13 @@ fn base64(datos: &[u8]) -> String {
 /// y pasa de los 2 MiB del búfer con el que WebKitGTK sirve los blobs, que es
 /// la condición exacta del fallo.
 fn video_real() -> Option<Vec<u8>> {
+    // `WRUSP_BANCO_FICHERO=/ruta.mp4`: un vídeo de verdad (por ejemplo, uno
+    // volcado por Wrusp desde un chat) en vez del generado con ffmpeg.
+    if let Ok(ruta) = std::env::var("WRUSP_BANCO_FICHERO") {
+        return std::fs::read(&ruta)
+            .map_err(|e| eprintln!("no se pudo leer {ruta}: {e}"))
+            .ok();
+    }
     // `WRUSP_BANCO_MOVFLAGS` permite generar otras variantes (por ejemplo
     // `frag_keyframe+empty_moov+default_base_moof` para un MP4 fragmentado).
     let movflags = std::env::var("WRUSP_BANCO_MOVFLAGS").unwrap_or_else(|_| "-faststart".into());

@@ -623,7 +623,6 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .user_agent(CHROME_UA)
         .initialization_script(aislado(browser::disguise_script()))
         .initialization_script(aislado(browser::hide_webcodecs_script()))
-        .initialization_script(aislado(crate::diagnostico::init_script(app)))
         .initialization_script(aislado(browser::fix_large_mp4_blobs_script()))
         .initialization_script(aislado(browser::hide_native_app_promo_script()))
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))

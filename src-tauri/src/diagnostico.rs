@@ -5,9 +5,10 @@
 //! fichero. Se activa con el interruptor de Ajustes → Diagnóstico (los
 //! ficheros van a `medios-fallidos/` dentro de la carpeta de registros) o con
 //! `WRUSP_GUARDAR_MEDIOS_FALLIDOS` en el entorno (vacío o `1` para la misma
-//! carpeta, o una ruta de carpeta). La página guarda los blobs que fallan y
-//! Rust los escribe en disco, listos para `gst-discoverer-1.0` o `ffprobe`.
-//! Apagado por defecto: son mensajes del usuario.
+//! carpeta, o una ruta de carpeta). La página retiene los últimos blobs que
+//! fallan y avisa; Rust decide en ese momento si los pide y los escribe en
+//! disco, listos para `gst-discoverer-1.0` o `ffprobe`. Apagado por defecto:
+//! son mensajes del usuario.
 
 use crate::config::ConfigState;
 use crate::runtime::AppHandle;
@@ -40,13 +41,6 @@ fn carpeta(app: &AppHandle) -> PathBuf {
         .map(|estado| estado.0.lock().unwrap().log_dir.clone())
         .unwrap_or_default();
     crate::logs::effective_dir(&configurada).join("medios-fallidos")
-}
-
-/// Script de arranque: la página solo ofrece volcados si Rust los va a
-/// recoger. Se evalúa al crear la vista, así que un cambio del interruptor
-/// vale para las vistas que se abran después (o tras F5).
-pub fn init_script(app: &AppHandle) -> String {
-    format!("window.__wruspGuardarFallos = {};", activo(app))
 }
 
 /// Pide a la vista `etiqueta` el medio fallido `id` y lo escribe en disco.
