@@ -2,39 +2,51 @@
 //!
 //! El registro dice *que* un vídeo falla y, desde la 0.4.8, qué códecs
 //! declara; pero para saber *por qué* GStreamer lo rechaza hace falta el
-//! fichero. Con `WRUSP_GUARDAR_MEDIOS_FALLIDOS` en el entorno (vacío o `1`
-//! para la carpeta temporal, o una ruta de carpeta), la página guarda los
-//! blobs que fallan y Rust los escribe en disco, listos para
-//! `gst-discoverer-1.0` o `ffprobe`. Apagado por defecto: son mensajes del
-//! usuario.
+//! fichero. Se activa con el interruptor de Ajustes → Diagnóstico (los
+//! ficheros van a `medios-fallidos/` dentro de la carpeta de registros) o con
+//! `WRUSP_GUARDAR_MEDIOS_FALLIDOS` en el entorno (vacío o `1` para la misma
+//! carpeta, o una ruta de carpeta). La página guarda los blobs que fallan y
+//! Rust los escribe en disco, listos para `gst-discoverer-1.0` o `ffprobe`.
+//! Apagado por defecto: son mensajes del usuario.
 
+use crate::config::ConfigState;
 use crate::runtime::AppHandle;
 use std::path::PathBuf;
+use tauri::Manager;
 
 const VARIABLE: &str = "WRUSP_GUARDAR_MEDIOS_FALLIDOS";
 const MAX_BASE64: usize = 64 * 1024 * 1024 / 3 * 4 + 8;
 
-/// ¿Está activado el volcado?
-pub fn activo() -> bool {
+/// ¿Está activado el volcado? Por el interruptor de ajustes o por el entorno.
+pub fn activo(app: &AppHandle) -> bool {
     std::env::var_os(VARIABLE).is_some()
+        || app
+            .try_state::<ConfigState>()
+            .map(|estado| estado.0.lock().unwrap().save_failed_media)
+            .unwrap_or(false)
 }
 
 /// Carpeta donde se guardan: la indicada en la variable si es una carpeta, y
-/// si no, una bajo la temporal.
-fn carpeta() -> PathBuf {
+/// si no, `medios-fallidos/` dentro de la carpeta de registros, que es la que
+/// el usuario ya sabe abrir desde ajustes.
+fn carpeta(app: &AppHandle) -> PathBuf {
     let valor = std::env::var(VARIABLE).unwrap_or_default();
     let ruta = PathBuf::from(&valor);
     if !valor.is_empty() && valor != "1" && ruta.is_dir() {
-        ruta
-    } else {
-        std::env::temp_dir().join("wrusp-medios-fallidos")
+        return ruta;
     }
+    let configurada = app
+        .try_state::<ConfigState>()
+        .map(|estado| estado.0.lock().unwrap().log_dir.clone())
+        .unwrap_or_default();
+    crate::logs::effective_dir(&configurada).join("medios-fallidos")
 }
 
 /// Script de arranque: la página solo ofrece volcados si Rust los va a
-/// recoger.
-pub fn init_script() -> String {
-    format!("window.__wruspGuardarFallos = {};", activo())
+/// recoger. Se evalúa al crear la vista, así que un cambio del interruptor
+/// vale para las vistas que se abran después (o tras F5).
+pub fn init_script(app: &AppHandle) -> String {
+    format!("window.__wruspGuardarFallos = {};", activo(app))
 }
 
 /// Pide a la vista `etiqueta` el medio fallido `id` y lo escribe en disco.
@@ -44,7 +56,7 @@ pub fn guardar_medio_fallido(app: &AppHandle, etiqueta: &str, id: &str) {
     use tauri::Manager;
     use webkit2gtk::WebViewExt;
 
-    if !activo() {
+    if !activo(app) {
         return;
     }
     // El id lo genera nuestro script (`f1`, `f2`…); nada más se acepta.
@@ -55,6 +67,7 @@ pub fn guardar_medio_fallido(app: &AppHandle, etiqueta: &str, id: &str) {
         return;
     };
     let id = id.to_string();
+    let dir = carpeta(app);
     let resultado = vista.with_webview(move |plataforma| {
         let nativa = plataforma.inner();
         let cuerpo = format!(
@@ -78,7 +91,6 @@ pub fn guardar_medio_fallido(app: &AppHandle, etiqueta: &str, id: &str) {
                         eprintln!("wrusp: medio fallido {id}: base64 ilegible");
                         return;
                     };
-                    let dir = carpeta();
                     let _ = std::fs::create_dir_all(&dir);
                     let nombre = format!(
                         "{}-{id}.mp4",

@@ -515,6 +515,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const vigilados = new WeakSet();
   const enObras = new WeakSet();    // medios a la espera de su fuente reordenada
   const reparados = new WeakSet();  // medios a los que ya se les cambió la fuente tras un fallo
+  let sinFuenteAnotado = false;     // el aviso de `src=""` sale una vez por vista
   const pausadosPorWrusp = new WeakSet();
 
   const anotar = (texto) => {
@@ -695,6 +696,19 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // aquí lo arregla el cambio de fuente que viene detrás.
       if (enObras.has(medio)) return;
       const codigo = medio.error ? medio.error.code : 0;
+      // `src=""`: WhatsApp deja así los vídeos que aún no ha descargado, y el
+      // motor, por especificación, falla con código 4 al resolver la cadena
+      // vacía a la propia página. No hay nada que reparar ni que sondear:
+      // el registro de la 0.4.8 mostró 71 de estos, cada uno con un sondeo
+      // que se traía 600 KiB de HTML.
+      const atributo = medio.getAttribute('src');
+      if (atributo !== null && atributo.trim() === '' && !medio.querySelector('source[src]')) {
+        if (!sinFuenteAnotado) {
+          sinFuenteAnotado = true;
+          anotar('medio con src vacío (código ' + codigo + '): se ignora, y los siguientes no se anotan');
+        }
+        return;
+      }
       const nodo = portador(medio);
       const url = String(urlDe(nodo || medio) || '');
       const entrada = nodo ? candidatos.get(url) : candidatos.get(porArreglada.get(url));
@@ -726,7 +740,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
       // Fuente remota: se sondea el principio con una petición de rango, que
       // es lo mismo que hace el motor, y se anota qué contesta y qué códecs
       // trae. Si la sirve el service worker de WhatsApp, aquí se ve.
-      if (!entrada && /^https?:/.test(url) && !reparados.has(medio)) {
+      if (!entrada && /^https?:/.test(url) && url !== location.href && !reparados.has(medio)) {
         reparados.add(medio);
         detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
         fetch(url, { headers: { Range: 'bytes=0-262143' } }).then(async (r) => {

@@ -96,7 +96,8 @@ fn video_con_movflags(movflags: &str) -> Option<Vec<u8>> {
     // `WRUSP_BANCO_VCODEC` cambia el códec de vídeo (libx265, libvpx-vp9…) para
     // reproducir en el banco lo que llegue en los chats de verdad.
     let vcodec = std::env::var("WRUSP_BANCO_VCODEC").unwrap_or_else(|_| "libx264".into());
-    let etiqueta: String = format!("{movflags}-{vcodec}")
+    let perfil = std::env::var("WRUSP_BANCO_PERFIL").unwrap_or_default();
+    let etiqueta: String = format!("{movflags}-{vcodec}-{perfil}")
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
@@ -116,6 +117,19 @@ fn video_con_movflags(movflags: &str) -> Option<Vec<u8>> {
             vec!["-tag:v", "hvc1"]
         } else {
             vec![]
+        })
+        // `WRUSP_BANCO_PERFIL=baseline` (o main/high) fija el perfil H.264; el
+        // registro real trae Baseline nivel 3.1 con marca mp42.
+        .args(match std::env::var("WRUSP_BANCO_PERFIL") {
+            Ok(perfil) if vcodec == "libx264" => vec![
+                "-profile:v".to_string(),
+                perfil,
+                "-level".to_string(),
+                "3.1".to_string(),
+                "-brand".to_string(),
+                "mp42".to_string(),
+            ],
+            _ => vec![],
         })
         .args(["-movflags", movflags])
         .arg(&destino)
@@ -457,6 +471,59 @@ const YA_ORDENADO: &str = r#"
 </script>
 "#;
 
+/// Copia de `permissions::apagar_sesion_multimedia` (los ejemplos no ven los
+/// módulos del binario): apaga la característica MediaSession del motor.
+fn apagar_sesion_multimedia(settings: &webkit2gtk::Settings) {
+    use std::ffi::CStr;
+    use webkit2gtk::glib::translate::ToGlibPtr;
+
+    #[repr(C)]
+    struct WebKitFeature {
+        _opaco: [u8; 0],
+    }
+    #[repr(C)]
+    struct WebKitFeatureList {
+        _opaco: [u8; 0],
+    }
+    extern "C" {
+        fn webkit_settings_get_all_features() -> *mut WebKitFeatureList;
+        fn webkit_feature_list_get_length(lista: *mut WebKitFeatureList) -> usize;
+        fn webkit_feature_list_get(lista: *mut WebKitFeatureList, i: usize) -> *mut WebKitFeature;
+        fn webkit_feature_list_unref(lista: *mut WebKitFeatureList);
+        fn webkit_feature_get_identifier(f: *mut WebKitFeature) -> *const std::os::raw::c_char;
+        fn webkit_settings_set_feature_enabled(
+            settings: *mut webkit2gtk::ffi::WebKitSettings,
+            f: *mut WebKitFeature,
+            activada: webkit2gtk::glib::ffi::gboolean,
+        );
+    }
+    unsafe {
+        let lista = webkit_settings_get_all_features();
+        if lista.is_null() {
+            return;
+        }
+        for i in 0..webkit_feature_list_get_length(lista) {
+            let caracteristica = webkit_feature_list_get(lista, i);
+            if caracteristica.is_null() {
+                continue;
+            }
+            let identificador = webkit_feature_get_identifier(caracteristica);
+            if identificador.is_null()
+                || CStr::from_ptr(identificador).to_bytes() != b"MediaSession"
+            {
+                continue;
+            }
+            webkit_settings_set_feature_enabled(
+                settings.to_glib_none().0,
+                caracteristica,
+                webkit2gtk::glib::ffi::GFALSE,
+            );
+            break;
+        }
+        webkit_feature_list_unref(lista);
+    }
+}
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
     let nombre_para_tiempo = nombre;
     // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
@@ -478,6 +545,20 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
     let vista = WebView::new();
     if let Some(ajustes) = WebViewExt::settings(&vista) {
         ajustes.set_enable_write_console_messages_to_stdout(true);
+        // `WRUSP_BANCO_AJUSTES=1`: los mismos ajustes del motor que pone Wrusp
+        // en `permissions::configure`, para que el banco mida el mismo motor.
+        if std::env::var_os("WRUSP_BANCO_AJUSTES").is_some() {
+            ajustes.set_enable_media_stream(true);
+            ajustes.set_enable_webrtc(true);
+            ajustes.set_enable_mediasource(true);
+            ajustes.set_enable_media_capabilities(true);
+            ajustes.set_enable_encrypted_media(true);
+            ajustes.set_enable_smooth_scrolling(true);
+            ajustes.set_enable_page_cache(true);
+            ajustes.set_javascript_can_access_clipboard(true);
+            ajustes.set_user_agent(Some("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"));
+            apagar_sesion_multimedia(&ajustes);
+        }
     }
     ventana.add(&vista);
     ventana.show_all();

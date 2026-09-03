@@ -80,6 +80,10 @@ pub struct AppConfig {
     /// Iniciar automáticamente al encender el equipo.
     #[serde(default)]
     pub autostart: bool,
+    /// Diagnóstico: guardar en la carpeta de registros los vídeos que no se
+    /// reproducen (hasta cinco por sesión), para poder analizarlos.
+    #[serde(default)]
+    pub save_failed_media: bool,
 }
 
 fn default_true() -> bool {
@@ -265,6 +269,7 @@ pub struct Toggles {
     pub notifications: bool,
     pub notification_privacy: bool,
     pub autostart: bool,
+    pub save_failed_media: bool,
 }
 
 #[tauri::command]
@@ -275,6 +280,7 @@ pub fn get_toggles(state: tauri::State<'_, ConfigState>) -> Toggles {
         notifications: cfg.notifications,
         notification_privacy: cfg.notification_privacy,
         autostart: cfg.autostart,
+        save_failed_media: cfg.save_failed_media,
     }
 }
 
@@ -324,6 +330,10 @@ pub fn set_toggle(app: AppHandle, name: String, enabled: bool) -> Result<(), Str
         }
         "autostart" => {
             cfg.autostart = enabled;
+            Ok(())
+        }
+        "saveFailedMedia" => {
+            cfg.save_failed_media = enabled;
             Ok(())
         }
         other => Err(format!("Ajuste desconocido: {other}")),

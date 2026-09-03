@@ -4,6 +4,17 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.9] — 2026-09-03
+
+### Corregido
+
+- **Los vídeos aún no descargados ya no cuentan como fallos.** WhatsApp los deja con `src=""`, y el motor falla con código 4 al resolver la cadena vacía a la propia página. La 0.4.8 los trataba como vídeos remotos: 71 «fallos» en el registro y, por cada uno, un sondeo que descargaba 600 KiB del HTML de WhatsApp. Ahora se reconocen y se ignoran, con un único aviso por vista.
+
+### Añadido
+
+- **Interruptor «Guardar los vídeos que no se reproducen» en Ajustes → Diagnóstico.** Hace lo mismo que la variable de entorno de la 0.4.8 sin pasar por una terminal: hasta cinco por sesión en `medios-fallidos/` dentro de la carpeta de registros. Se aplica a las vistas abiertas después de activarlo, o tras F5 en el chat.
+- **El banco puede correr con los ajustes del motor de Wrusp** (`WRUSP_BANCO_AJUSTES=1`) y con un perfil H.264 concreto (`WRUSP_BANCO_PERFIL=baseline`). Medido: H.264 High, Main y Baseline 3.1 con marca `mp42`, HEVC y VP9 se reproducen como `blob:` con los ajustes de Wrusp. El único blob real que falló en el registro de la 0.4.8 declaraba justo Baseline 3.1 `mp42`, así que la diferencia está en los bytes del fichero y hace falta el volcado.
+
 ## [0.4.8] — 2026-09-03
 
 ### Corregido

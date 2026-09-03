@@ -92,10 +92,11 @@ rm ~/.cache/gstreamer-1.0/registry.*.bin
 Si un vídeo concreto sigue sin reproducirse, el registro (`wrusp.log`, carpeta
 en Ajustes → Carpetas) anota por cada fallo el código, los códecs que declara
 el fichero y, para las fuentes remotas, qué contesta el servidor. Para
-analizar el fichero en sí, arranca Wrusp con la variable
-`WRUSP_GUARDAR_MEDIOS_FALLIDOS=1` (o con una ruta de carpeta): los medios que
-fallen se guardan en `/tmp/wrusp-medios-fallidos/` y se pueden mirar con
-`gst-discoverer-1.0` o `ffprobe`. Apagado por defecto: son tus mensajes.
+analizar el fichero en sí, activa «Guardar los vídeos que no se reproducen»
+en Ajustes → Diagnóstico (o arranca con `WRUSP_GUARDAR_MEDIOS_FALLIDOS=1`):
+los medios que fallen se guardan en `medios-fallidos/` dentro de la carpeta de
+registros y se pueden mirar con `gst-discoverer-1.0` o `ffprobe`. Apagado por
+defecto: son tus mensajes.
 
 Wrusp no distribuye códecs: los pone la distribución.
 
