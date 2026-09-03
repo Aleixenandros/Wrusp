@@ -531,6 +531,66 @@ fn apagar_sesion_multimedia(settings: &webkit2gtk::Settings) {
     }
 }
 
+/// Maqueta 6 — ¿por qué falla dentro de WhatsApp lo que aquí se reproduce?
+/// Con `WRUSP_BANCO_FICHERO` y el vídeo real volcado: se prueba `canPlayType`
+/// con las cadenas de códec que WhatsApp podría declarar, un `<source type>`
+/// con ellas, y (con `WRUSP_BANCO_CSP`) la política CSP de WhatsApp como meta.
+const DIAGNOSTICO: &str = r#"
+CSP_META
+<video id="a" muted playsinline style="width:200px"></video>
+<video id="b" muted playsinline style="width:200px"></video>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const v = document.createElement('video');
+    const cadenas = [
+      'video/mp4',
+      'video/mp4; codecs="avc1.64001f"',
+      'video/mp4; codecs="avc1.64001F, mp4a.40.2"',
+      'video/mp4; codecs="avc1.42001f"',
+      'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+      'video/mp4; codecs="avc1.4d401f, mp4a.40.2"',
+      'video/mp4; codecs=avc1.64001f,mp4a.40.2',
+    ];
+    const cpt = cadenas.map((c) => c + ' → "' + v.canPlayType(c) + '"');
+    const mse = (typeof MediaSource === 'function')
+      ? cadenas.map((c) => MediaSource.isTypeSupported(c)).join(',') : 'sin MSE';
+
+    const esperarFin = (m, ms) => new Promise((listo) => {
+      const t = setTimeout(() => listo('sin veredicto en ' + ms + ' ms'), ms);
+      m.addEventListener('error', () => { clearTimeout(t); listo('error ' + (m.error && m.error.code) + ' red ' + m.networkState); }, { once: true });
+      m.addEventListener('playing', () => { clearTimeout(t); listo('reproduce'); }, { once: true });
+    });
+
+    // a) src directo (como el banco de siempre)
+    const a = document.getElementById('a');
+    a.src = url; a.play().catch(() => {});
+    const ra = await esperarFin(a, 6000);
+
+    // b) <source type="…codecs…"> como podría hacerlo WhatsApp
+    const b = document.getElementById('b');
+    const fuente = document.createElement('source');
+    fuente.type = 'video/mp4; codecs="avc1.64001F, mp4a.40.2"';
+    fuente.src = url;
+    b.appendChild(fuente);
+    b.load(); b.play().catch(() => {});
+    const rb = await esperarFin(b, 6000);
+
+    informe([
+      ['src directo reproduce', ra === 'reproduce'],
+      ['<source type=codecs> reproduce', rb === 'reproduce'],
+      ['canPlayType admite avc1 High', /64001f"? → "(probably|maybe)/i.test(cpt[1])],
+    ], 'a=' + ra + ' · b=' + rb + ' · ' + cpt.join(' · ') + ' · MSE=' + mse
+       + ' · csp=' + (document.querySelector('meta[http-equiv]') ? 'sí' : 'no'));
+  })();
+</script>
+"#;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
     let nombre_para_tiempo = nombre;
     // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
@@ -668,6 +728,16 @@ fn main() {
                 &AUTOPLAY.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
+            {
+                let meta = std::env::var("WRUSP_BANCO_CSP")
+                    .map(|c| format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{}\">", c.replace('"', "&quot;")))
+                    .unwrap_or_default();
+                correr(
+                    "Diagnóstico: canPlayType, <source type> y CSP",
+                    &DIAGNOSTICO.replace("MP4_BASE64", &incrustado).replace("CSP_META", &meta),
+                    fallos.clone(),
+                );
+            }
             if let Some(ordenado) = video_ordenado() {
                 let incrustado = format!("'{}'", base64(&ordenado));
                 correr(

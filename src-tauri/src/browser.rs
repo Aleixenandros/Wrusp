@@ -672,11 +672,32 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   // Intenta enderezar el blob de un medio que acaba de fallar y lo vuelve a
   // arrancar; si no hay nada que enderezar, lo detiene.
+  // Segundo intento cuando el remux no tiene nada que hacer: la misma URL
+  // del blob con una acuñación nueva. Los vídeos volcados de un chat real se
+  // reproducen tal cual en el banco, así que si el motor los rechaza sin leer
+  // un byte, lo que falla es la resolución de esa URL, no el fichero.
+  function reacunar(medio, nodo, url, entrada, seguir, detalle) {
+    const nueva = crearUrl.call(URL, entrada.blob);
+    candidatos.set(nueva, { blob: entrada.blob, arreglada: null, definitiva: nueva, trabajo: null, motivo: entrada.motivo, reacunada: true });
+    porArreglada.set(nueva, url);
+    return usar(medio, nodo, nueva).then(() => {
+      enObras.delete(medio);
+      anotar('blob reacuñado como URL nueva' + detalle + ': se reintenta');
+      if (seguir && medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
+    });
+  }
+
   function reparar(medio, nodo, url, entrada, seguir, detalle) {
     enObras.add(medio);
+    // ¿Sigue el blob accesible desde la página? Si no, la URL fue revocada o
+    // el registro de blobs la perdió, y eso explica el «formato no admitido».
+    fetch(url).then((r) => r.blob()).then(
+      (b) => anotar('el blob sigue accesible por fetch (' + Math.round(b.size / 1024) + ' KiB)'),
+      (e) => anotar('el blob NO se deja leer por fetch: ' + ((e && e.message) || e)));
     return preparar(url)
       .then((definitiva) => {
         if (definitiva === url) {
+          if (!entrada.reacunada) return reacunar(medio, nodo, url, entrada, seguir, detalle);
           enObras.delete(medio);
           detener(medio, url, 'el blob no se puede reordenar (' + (entrada.motivo || '?') + ')' + detalle + ': pipeline detenido');
           describirFallido(entrada);
@@ -722,7 +743,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
       if (esquema === 'https:' || esquema === 'http:') {
         try { const u = new URL(url); esquema = u.origin + u.pathname.slice(0, 48); } catch (e) { /* se queda el esquema */ }
       }
-      const detalle = ' (código ' + codigo + ', red ' + medio.networkState + ', datos ' + medio.readyState
+      const elemento = (nodo === medio || !nodo ? 'src' : 'source') + (medio.autoplay ? ' autoplay' : '')
+        + ' preload=' + medio.preload + (medio.isConnected ? '' : ' desconectado')
+        + (medio.hasAttribute('crossorigin') ? ' crossorigin' : '');
+      const detalle = ' (' + elemento + ', código ' + codigo + ', red ' + medio.networkState + ', datos ' + medio.readyState
         + ', ' + (!entrada ? 'sin blob candidato, ' + esquema : nodo ? 'blob candidato' : 'blob ya reordenado')
         + (entrada && entrada.blob ? ', ' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') : '')
         + (entrada && entrada.motivo ? ', ' + entrada.motivo : '')
@@ -738,6 +762,13 @@ pub fn fix_large_mp4_blobs_script() -> String {
       if (nodo && entrada && !entrada.definitiva && !reparados.has(medio)) {
         reparados.add(medio);
         reparar(medio, nodo, url, entrada, seguir, detalle);
+        return;
+      }
+      // La URL reacuñada también ha fallado: ahora sí, se detiene y se
+      // describe el fichero (es el caso que hay que analizar a mano).
+      if (entrada && entrada.reacunada) {
+        detener(medio, url, 'el blob reacuñado también falla' + detalle + ': pipeline detenido');
+        describirFallido(entrada);
         return;
       }
       // Fuente remota: se sondea el principio con una petición de rango, que

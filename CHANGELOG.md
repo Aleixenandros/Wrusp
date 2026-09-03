@@ -4,6 +4,17 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.11] — 2026-09-03
+
+### Corregido
+
+- **Segundo intento con una URL nueva del mismo blob.** Los siete vídeos volcados de un chat real con la 0.4.10 están bien: `ffprobe` los lee, GStreamer los reproduce y el banco los reproduce dentro de WebKitGTK, con los mismos ajustes del motor que usa Wrusp, tanto por `src` como por `<source type>`; la CSP de WhatsApp admite `blob:` en `media-src` y `canPlayType` responde «probably». Y sin embargo dentro de WhatsApp fallan con «formato no admitido» antes de leer un solo byte y sin que nadie haya llamado a `play()`. Ese es el síntoma de una URL de blob que el proceso de red no resuelve. Cuando el remux no tiene nada que hacer, Wrusp reacuña ahora una URL nueva del mismo blob y reintenta; solo si esa también falla se detiene el reproductor.
+
+### Añadido
+
+- **Más contexto en cada fallo de medio**: si la fuente era `src` o `<source>`, `autoplay`, `preload`, si el elemento estaba en el documento, y si el blob seguía accesible por `fetch` en el momento del fallo.
+- **Maqueta de diagnóstico en `banco_faststart`** (`WRUSP_BANCO_FICHERO` + `WRUSP_BANCO_AJUSTES`): `canPlayType` con las cadenas de códec habituales, `<source type>`, MSE, y la CSP de WhatsApp como `<meta>` con `WRUSP_BANCO_CSP`.
+
 ## [0.4.10] — 2026-09-03
 
 ### Corregido
