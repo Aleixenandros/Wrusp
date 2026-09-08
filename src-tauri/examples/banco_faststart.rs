@@ -225,19 +225,36 @@ const ALGORITMO: &str = r#"
   // El script no exporta nada, así que se ejercita por donde entra de verdad:
   // un blob de vídeo que se reproduce. `URL.createObjectURL` está envuelto, y
   // al pulsar play la fuente del <video> tiene que quedar reordenada.
+  // La fuente que Wrusp acabó poniendo. Hay que cogerla al vuelo: estos MP4
+  // de juguete no llevan un códec de verdad, así que el motor rechaza también
+  // la fuente buena y Wrusp desmonta el reproductor. Lo que se comprueba aquí
+  // es la reordenación, no que el motor sepa decodificar tres kilobytes de
+  // relleno.
+  async function fuentePuesta(v, url) {
+    for (let i = 0; i < 250; i++) {
+      const actual = v.src || '';
+      if (actual && actual !== url) return actual;
+      await new Promise((l) => setTimeout(l, 10));
+    }
+    return v.src || '';
+  }
+
   async function reordenadoDe(bytes) {
     const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
     const v = document.getElementById('v');
     v.src = url;
-    try { await v.play(); } catch (e) { /* sin códec: da igual, interesa la URL */ }
-    const definitiva = v.src;
+    const arrancando = v.play().catch(() => {});
+    const definitiva = await fuentePuesta(v, url);
+    await arrancando;
     // Sin cambio, o detenido por el propio script: no lo tocó. Desde la 0.4.12
     // la fuente pasa a `data:` aunque no haya nada que reordenar, así que «no
     // lo tocó» significa que los bytes son los mismos.
-    if (definitiva === url || !definitiva) return null;
+    if (!definitiva || definitiva === url) return null;
     try {
       const resp = await fetch(definitiva);
       const nuevo = new Uint8Array(await resp.arrayBuffer());
+      // Desde la 0.4.12 la fuente pasa a `data:` aunque no haya nada que
+      // reordenar, así que «no lo tocó» es que los bytes son los mismos.
       if (nuevo.length === bytes.length && nuevo.every((b, i) => b === bytes[i])) return null;
       return nuevo;
     } catch (e) {
@@ -423,6 +440,20 @@ const AUTOPLAY: &str = r#"
               || (window.__wruspUltimoFallo && window.__wruspUltimoFallo.codigo) || '?') + ')' : '')
           + (v.src === url ? '@original' : '@reordenado'));
       });
+    // Testigo: un observador ajeno a Wrusp sobre el mismo elemento. Si este
+    // tampoco se entera del desplazamiento, la prueba de la pausa no puede
+    // decir nada del script, solo del motor. Medido en WebKitGTK 2.52: no se
+    // entera, así que sin este testigo la maqueta acusaba a Wrusp de algo que
+    // no depende de él.
+    let avisosDelTestigo = 0;
+    let fueraSegunTestigo = false;
+    new IntersectionObserver((es) => {
+      for (const e of es) {
+        avisosDelTestigo++;
+        if (!e.isIntersecting) fueraSegunTestigo = true;
+      }
+    }, { rootMargin: '50px' }).observe(v);
+
     v.src = url;   // sin play(): arranca solo, o no
     await new Promise((listo) => setTimeout(listo, 7000));
     const enMarcha = !v.paused && v.currentTime > 0.2;
@@ -432,15 +463,23 @@ const AUTOPLAY: &str = r#"
     window.scrollTo(0, 4000);
     await new Promise((listo) => setTimeout(listo, 1500));
     const pausadoFuera = v.paused;
+    diario.push('fuera(y=' + Math.round(window.scrollY)
+      + ' rect=' + Math.round(v.getBoundingClientRect().top)
+      + ' paused=' + pausadoFuera + ' testigo=' + avisosDelTestigo + ')');
     window.scrollTo(0, 0);
     await new Promise((listo) => setTimeout(listo, 2500));
     const sigueAlVolver = !v.paused && v.currentTime !== t1;
 
+    // La pausa solo se le puede exigir a Wrusp si el motor avisó de que el
+    // elemento salió. Cuando el testigo no se entera, se comprueba lo único
+    // que sí depende del script: que no lo deja parado por su cuenta.
+    const pausaJuzgable = fueraSegunTestigo;
     informe([
-      ['la fuente queda reordenada sin que nadie llame a play()', v.src !== url],
+      ['la fuente queda lista sin que nadie llame a play()', v.src !== url],
       ['el vídeo con autoplay arranca', enMarcha],
       ['no queda un error de medio colgando', !v.error],
-      ['fuera de la pantalla se pausa', pausadoFuera],
+      [pausaJuzgable ? 'fuera de la pantalla se pausa' : 'sin aviso del motor: el vídeo sigue como estaba',
+       pausaJuzgable ? pausadoFuera : !pausadoFuera],
       ['al volver sigue reproduciéndose', sigueAlVolver],
     ], 'currentTime=' + v.currentTime.toFixed(2) + ' · ' + diario.join(' '));
   })();
@@ -674,6 +713,244 @@ PRUEBA_SALTO
 </script>
 "#;
 
+/// Maqueta 8 — la fuente lista antes de que nadie la pida. Un vídeo visible
+/// tiene que pasar a `data:` por su cuenta, sin `play()` y sin que el motor
+/// haya llegado a fallar, que es lo que en la 0.4.12 se veía como un error de
+/// un instante o como un salto al mover la barra.
+const ANTICIPADA: &str = r#"
+<video id="v" muted playsinline style="width:240px;display:block"></video>
+<div id="relleno"></div>
+<div id="lejos" style="height:3000px"></div>
+<div id="envoltorio"><video id="w" muted playsinline style="width:240px;display:block"></video></div>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    const v = document.getElementById('v');
+    let errores = 0;
+    v.addEventListener('error', () => errores++);
+    v.src = url;   // visible, sin autoplay y sin play()
+
+    // Lo que hace el usuario: mirar el chat un momento antes de pulsar.
+    await new Promise((l) => setTimeout(l, 3000));
+    const antesDePlay = v.src;
+    const erroresAntes = errores;
+    const precarga = v.preload;
+
+    try { await v.play(); } catch (e) { /* interesa el estado, no la promesa */ }
+    await new Promise((l) => setTimeout(l, 3000));
+
+    // Y el otro disparador: el ratón. Para probarlo hay que agotar antes el
+    // cupo de copias, que es justo lo que pasa en un chat largo: los primeros
+    // vídeos se llevan las copias y el resto espera a que alguien se acerque.
+    const relleno = document.getElementById('relleno');
+    for (let i = 0; i < 8; i++) {
+      const r = document.createElement('video');
+      r.muted = true;
+      r.style.cssText = 'width:60px';
+      relleno.appendChild(r);
+      r.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    }
+    await new Promise((l) => setTimeout(l, 4000));
+
+    const w = document.getElementById('w');
+    const urlW = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    w.src = urlW;
+    await new Promise((l) => setTimeout(l, 2000));
+    const antesDelRaton = w.src;
+    document.getElementById('envoltorio').dispatchEvent(
+      new PointerEvent('pointerenter', { bubbles: false }));
+    await new Promise((l) => setTimeout(l, 3000));
+
+    informe([
+      ['la fuente ya es data: sin que nadie pulse', antesDePlay.indexOf('data:') === 0],
+      ['dejarla lista no la precarga', precarga === 'none'],
+      ['el motor no ha fallado antes del play', erroresAntes === 0],
+      ['reproduce al pulsar', v.currentTime > 0.5 && !v.paused],
+      ['y sin ningún error', errores === 0],
+      ['con el cupo lleno, un vídeo más espera su turno', antesDelRaton.indexOf('blob:') === 0],
+      ['y el puntero sobre su contenedor lo prepara', w.src.indexOf('data:') === 0],
+    ], 'antes=' + antesDePlay.slice(0, 12) + ' preload=' + precarga
+      + ' errores=' + errores + ' t=' + v.currentTime.toFixed(2)
+      + ' · lejano antes=' + antesDelRaton.slice(0, 12) + ' después=' + w.src.slice(0, 12));
+  })();
+</script>
+"#;
+
+/// Maqueta 9 — ficheros que cuestan caro. Los números del remux vienen del
+/// MP4 que alguien ha enviado y de ellos sale el trabajo que se hace en el
+/// hilo de la página, así que conviene tener medido lo que cuesta el peor
+/// fichero que llega hasta ahí.
+///
+/// Honestidad sobre lo que prueba: **ninguno de estos casos rompía** el
+/// script anterior. El sondeo barato solo mira 64 cajas de nivel superior,
+/// así que un fichero con cientos de miles de ellas ni llega al remux, y las
+/// tablas que mienten sobre su tamaño ya las rechazaba la comprobación
+/// contra el tamaño real de la caja. Las cotas y la búsqueda binaria que
+/// añade la 0.4.13 son defensa en profundidad, tomada de oxidezap (MIT): lo
+/// que compran es que el trabajo quede acotado por construcción y no por lo
+/// que otro freno deje pasar. Esta maqueta es la que lo deja medido.
+const HOSTILES: &str = r#"
+<video id="v"></video>
+<script>SCRIPT</script>
+<script>
+  const texto = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  function caja(tipo, cuerpo) {
+    const b = new Uint8Array(8 + cuerpo.length);
+    new DataView(b.buffer).setUint32(0, b.length);
+    b.set(texto(tipo), 4);
+    b.set(cuerpo, 8);
+    return b;
+  }
+  const unir = (trozos) => {
+    const total = trozos.reduce((n, t) => n + t.length, 0);
+    const b = new Uint8Array(total);
+    let p = 0;
+    for (const t of trozos) { b.set(t, p); p += t.length; }
+    return b;
+  };
+  const anidar = (tipos, hoja) => tipos.reduceRight((dentro, t) => caja(t, dentro), hoja);
+  const ftyp = () => caja('ftyp', texto('isomiso2avc1mp41'));
+
+  // Una tabla `stco` con `offsets` de verdad dentro.
+  function stco(offsets) {
+    const c = new Uint8Array(8 + offsets.length * 4);
+    const v = new DataView(c.buffer);
+    v.setUint32(0, 0);
+    v.setUint32(4, offsets.length);
+    offsets.forEach((o, i) => v.setUint32(8 + i * 4, o));
+    return caja('stco', c);
+  }
+  // Una `stco` que dice tener `cuantos` entradas y no las trae.
+  function stcoMentirosa(cuantos) {
+    const c = new Uint8Array(8);
+    const v = new DataView(c.buffer);
+    v.setUint32(0, 0);
+    v.setUint32(4, cuantos);
+    return caja('stco', c);
+  }
+  // Un `moov` anidado `veces` veces dentro de sí mismo.
+  function moovProfundo(veces) {
+    let dentro = stcoMentirosa(1);
+    for (let i = 0; i < veces; i++) dentro = caja('moov', dentro);
+    return dentro;
+  }
+
+  // Las cajas de nivel superior de lo que el motor acabó recibiendo. Desde
+  // que la fuente se entrega como `data:` aunque no haya nada que reordenar,
+  // «cambió la URL» ya no dice si el remux actuó: lo dice el orden.
+  async function tiposDe(src) {
+    const resp = await fetch(src);
+    const u8 = new Uint8Array(await resp.arrayBuffer());
+    const vista = new DataView(u8.buffer);
+    const salida = [];
+    let p = 0;
+    while (p + 8 <= u8.length && salida.length < 6) {
+      let tam = vista.getUint32(p);
+      salida.push(String.fromCharCode(u8[p + 4], u8[p + 5], u8[p + 6], u8[p + 7]));
+      if (tam === 1) tam = Number(vista.getBigUint64(p + 8));
+      else if (tam === 0) tam = u8.length - p;
+      if (tam < 8) break;
+      p += tam;
+    }
+    return salida;
+  }
+
+  // El script no exporta nada: se ejercita por donde entra, un blob de vídeo
+  // que se reproduce. Devuelve cuánto tardó en decidir y si el índice acabó
+  // delante de los datos.
+  // Igual que en la maqueta del algoritmo: la fuente hay que cogerla al vuelo
+  // porque el motor rechaza estos ficheros de juguete y Wrusp los desmonta.
+  async function fuentePuesta(v, url) {
+    for (let i = 0; i < 250; i++) {
+      const actual = v.src || '';
+      if (actual && actual !== url) return actual;
+      await new Promise((l) => setTimeout(l, 10));
+    }
+    return v.src || '';
+  }
+
+  async function medir(bytes) {
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    const v = document.getElementById('v');
+    const t0 = performance.now();
+    v.src = url;
+    const arrancando = v.play().catch(() => {});
+    const puesta = await fuentePuesta(v, url);
+    await arrancando;
+    const ms = performance.now() - t0;
+    let tipos = [];
+    try { tipos = await tiposDe(puesta); } catch (e) { /* fuente retirada */ }
+    const iMoov = tipos.indexOf('moov');
+    const iDatos = tipos.findIndex((t) => t === 'mdat' || t === 'free');
+    const reordenado = iMoov >= 0 && (iDatos < 0 || iMoov < iDatos);
+    v.removeAttribute('src');
+    v.load();
+    URL.revokeObjectURL(url);
+    return { ms, reordenado, tipos: tipos.join('/') };
+  }
+
+  (async () => {
+    const pruebas = [];
+    const notas = [];
+
+    // ── El peor fichero que llega al remux: tantas cajas de nivel superior
+    // como admite el sondeo, y una tabla con muchos trozos. Reubicar cada
+    // trozo recorriendo la lista de cajas es el producto de los dos.
+    const CAJAS = 60;   // el sondeo barato para en 64
+    const TROZOS = 200000;
+    const relleno = [];
+    for (let i = 0; i < CAJAS; i++) relleno.push(caja('free', new Uint8Array(0)));
+    const f = ftyp();
+    const mdat = caja('mdat', new Uint8Array(TROZOS * 4));
+    const inicioDatos = f.length + CAJAS * 8 + 8;
+    const offsets = [];
+    for (let i = 0; i < TROZOS; i++) offsets.push(inicioDatos + i * 4);
+    const caro = unir([
+      f, ...relleno, mdat,
+      anidar(['moov', 'trak', 'mdia', 'minf', 'stbl'], stco(offsets)),
+    ]);
+    let r = await medir(caro);
+    notas.push(CAJAS + ' cajas x ' + TROZOS + ' trozos: ' + Math.round(r.ms) + ' ms ' + r.tipos);
+    pruebas.push([CAJAS + ' cajas y ' + TROZOS + ' trozos no atascan la página', r.ms < 5000]);
+    pruebas.push(['y el índice acaba delante', r.reordenado]);
+
+    // ── Cotas: nada de esto es válido y todo se rechaza enseguida.
+    const gigante = unir([
+      f, caja('mdat', new Uint8Array(4096)),
+      anidar(['moov', 'trak', 'mdia', 'minf', 'stbl'], stcoMentirosa(0xffffffff)),
+    ]);
+    r = await medir(gigante);
+    notas.push('tabla que miente ' + Math.round(r.ms) + ' ms ' + r.tipos);
+    pruebas.push(['una tabla que declara 4.000 millones de trozos no se reordena', !r.reordenado]);
+    pruebas.push(['y se rechaza enseguida', r.ms < 4000]);
+
+    const hondo = unir([f, caja('mdat', new Uint8Array(4096)), moovProfundo(20000)]);
+    r = await medir(hondo);
+    notas.push('anidado 20000 ' + Math.round(r.ms) + ' ms ' + r.tipos);
+    pruebas.push(['un moov anidado 20.000 veces no se reordena', !r.reordenado]);
+    pruebas.push(['y no revienta la pila', r.ms < 4000]);
+
+    // ── Y lo válido sigue pasando.
+    const datosBuenos = new Uint8Array(3000).map((_, i) => (i * 31) & 0xff);
+    const mdatBueno = caja('mdat', datosBuenos);
+    const chunks = [f.length + 8, f.length + 8 + 1000, f.length + 8 + 2000];
+    const bueno = unir([
+      f, mdatBueno,
+      anidar(['moov', 'trak', 'mdia', 'minf', 'stbl'], stco(chunks)),
+    ]);
+    r = await medir(bueno);
+    notas.push('válido ' + r.tipos);
+    pruebas.push(['un MP4 válido con el índice al final se sigue reordenando', r.reordenado]);
+
+    informe(pruebas, notas.join(' · '));
+  })();
+</script>
+"#;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
     let nombre_para_tiempo = nombre;
     // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
@@ -800,6 +1077,11 @@ fn main() {
     let fallos = std::rc::Rc::new(std::cell::Cell::new(0));
 
     correr("Reordenación, byte a byte", ALGORITMO, fallos.clone());
+    correr(
+        "Ficheros que cuestan caro: trabajo acotado y cotas del remux",
+        HOSTILES,
+        fallos.clone(),
+    );
 
     match video_real() {
         Some(mp4) => {
@@ -813,6 +1095,11 @@ fn main() {
             correr(
                 "Un chat con dos docenas de adjuntos",
                 &MUCHOS.replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
+            correr(
+                "La fuente lista antes de que nadie la pida",
+                &ANTICIPADA.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
             correr(

@@ -4,6 +4,24 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.13] — 2026-09-09
+
+### Corregido
+
+- **El vídeo se prepara antes de que lo pulses, no después de que falle.** La 0.4.12 sustituía la fuente cuando el motor ya la había rechazado: funcionaba, pero el reproductor enseñaba su error un instante antes de arreglarse, y al mover la barra el fallo llegaba con el vídeo en marcha, que es lo que se veía como salto o como cuelgue. Ahora la fuente se deja lista en cuanto el vídeo aparece en el chat, y de nuevo cuando el ratón se acerca a él, que es lo que precede a un clic. Dejar un vídeo listo no lo precarga: sigue sin abrir su pipeline hasta que se reproduce, y como mucho se preparan seis a la vez.
+- **Un vídeo con la copia ya puesta ya no falla por partida doble.** La marca que decía de qué fichero salía cada fuente era compartida entre la preparación anticipada y la reproducción, así que la primera en terminar dejaba a la segunda sin protección: un error que llegase en ese hueco se tomaba por definitivo y desmontaba un reproductor que solo estaba cambiando de fuente.
+- **Un vídeo ya no podía recibir una fuente vacía.** Al llegar al tope de copias en memoria, el desalojo podía soltar la que se acababa de leer antes de entregarla, y el vídeo recién pulsado fallaba con «formato no admitido» sin que hubiera nada malo en el fichero. La copia recién llegada ya no entra en el desalojo, y una fuente vacía se rechaza antes de tocar el reproductor.
+
+### Añadido
+
+- **Cotas en la lectura del MP4**, adoptadas de [oxidezap](https://github.com/oxidezap/client) (MIT): tope de cajas por tramo, de anidamiento y de entradas en las tablas de trozos, comprobadas antes de multiplicar. Los números del fichero deciden cuánta memoria se reserva, y un MP4 preparado a mala idea podía pedir más en metadatos que lo que ocupa el fichero. Ninguno de esos casos rompía la versión anterior, porque el sondeo barato ya solo mira las primeras cajas; lo que cambia es que el trabajo queda acotado por construcción y no por lo que otro freno deje pasar.
+- **Reubicación de trozos por búsqueda binaria** en vez de recorrer la lista de cajas por cada trozo. Un MP4 con sesenta cajas y doscientos mil trozos se reordena en 147 milisegundos.
+- **Maquetas nuevas en `banco_faststart`**: la fuente lista antes de pulsar, con el control que la hace cantar en la versión anterior, el disparador del ratón con el cupo de copias lleno, y ficheros que cuestan caro con las cotas medidas.
+
+### Nota técnica
+
+- El observador de visibilidad **no sirve** para esto en WebKitGTK 2.52: avisa la primera vez, cuando el elemento aparece, y después de desplazarse no vuelve a avisar. Medido en el banco con un observador ajeno a Wrusp puesto sobre el mismo vídeo, que tampoco se entera, así que es del motor. Por eso la preparación se dispara al aparecer el vídeo y con el ratón encima, y no al entrar en pantalla. La misma limitación explica que la pausa de los GIF fuera de la vista, que la 0.4.4 daba por hecha, no funcione siempre.
+
 ## [0.4.12] — 2026-09-03
 
 ### Corregido
