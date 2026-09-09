@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.14" date="2026-09-09">
+      <description>
+        <p>Entrar en un chat con vídeos o GIF ya no cuelga la aplicación: la preparación de las fuentes se limita y se hace de una en una.</p>
+      </description>
+    </release>
     <release version="0.4.13" date="2026-09-09">
       <description>
         <p>El vídeo se prepara al entrar en pantalla, antes de que se pulse, en vez de arreglarse después de fallar. Y la lectura del MP4 queda acotada frente a ficheros preparados a mala idea.</p>

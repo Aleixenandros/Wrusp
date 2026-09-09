@@ -552,7 +552,14 @@ pub fn fix_large_mp4_blobs_script() -> String {
   // vídeos que WhatsApp aún no había reproducido: al pulsarlos ya no eran
   // candidatos y fallaban sin remedio. Lo que se acota es la copia, nunca el
   // candidato.
-  const MAX_COPIAS = 6;
+  const MAX_COPIAS = 4;
+  // Preparaciones por adelantado que se permiten sin que nadie haya mostrado
+  // interés. Deliberadamente bajo: entrar en un chat registra todos sus
+  // vídeos en el mismo instante, y la 0.4.13 lanzó cuarenta lecturas a la vez
+  // porque el cupo solo contaba las copias ya terminadas. Dos procesos web al
+  // 45 % de CPU y 2,3 GB entre ambos, medido en el registro real. Lo demás
+  // espera al puntero, que es cuando hay intención de reproducir.
+  const MAX_ADELANTADAS = 2;
   // Por encima de esto el vídeo se queda como blob: la copia ocupa cuatro
   // tercios del fichero en la página más lo que el motor decodifique.
   const MAX_DATA = 64 * 1024 * 1024;
@@ -585,6 +592,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const estaEnObras = (medio) => (obras.get(medio) || 0) > 0;
   const reparados = new WeakSet();  // medios a los que ya se les cambió la fuente tras un fallo
   const anticipados = new WeakSet();// medios que ya se prepararon por adelantado
+  let adelantadas = 0;              // preparaciones por adelantado encoladas o en marcha
+  let colaAnticipada = Promise.resolve(); // van de una en una
   const esperandoPuntero = new WeakSet(); // medios con el disparador de puntero puesto
   const pausadosPorWrusp = new WeakSet();
   let sinFuenteAnotado = false;     // el aviso de `src=""` sale una vez por vista
@@ -646,7 +655,12 @@ pub fn fix_large_mp4_blobs_script() -> String {
   /// ¿Cabe otra copia sin desalojar a nadie? Lo pregunta la preparación
   /// anticipada, que es un lujo: si no hay sitio, el vídeo espera a que lo
   /// pulsen y entonces se prepara igual, desalojando si hace falta.
-  const cabeOtraCopia = () => conCopia.length < MAX_COPIAS;
+  /// Copias contadas: las vivas más las pedidas y aún sin terminar. Contar
+  /// solo las vivas es lo que colgó la 0.4.13: `conCopia` crece cuando una
+  /// copia **termina**, así que los treinta vídeos que un chat registra en el
+  /// mismo instante pasaban todos la comprobación y pedían su lectura a la vez.
+  const copiasContadas = () => conCopia.length + adelantadas;
+  const cabeOtraCopia = (tope) => copiasContadas() < (tope || MAX_COPIAS);
 
   // ── Visibilidad ──────────────────────────────────────────────────────────
   // El observador pausa los vídeos con autoplay que salen de la pantalla,
@@ -927,16 +941,20 @@ pub fn fix_large_mp4_blobs_script() -> String {
     const entrada = candidatos.get(url);
     if (!entrada || entrada.definitiva || fallidas.has(url)) return;
     if (!llevaVideo(entrada) || entrada.blob.size > MAX_DATA) return;
-    // Sin `forzar`, solo si cabe una copia más sin desalojar a nadie: los
-    // primeros vídeos del chat se dejan listos y los demás esperan su turno.
-    // Con `forzar` —el puntero encima, que es lo que precede a un clic— se
-    // prepara aunque haya que desalojar la copia más vieja que nadie use.
-    if (!forzar && !cabeOtraCopia()) return;
+    // Sin `forzar`, solo un par por adelantado: entrar en un chat registra
+    // todos sus vídeos a la vez y leerlos todos cuelga la aplicación. Con
+    // `forzar` —el puntero encima, que es lo que precede a un clic— se
+    // prepara mientras quede cupo de copias.
+    if (!cabeOtraCopia(forzar ? MAX_COPIAS : MAX_ADELANTADAS)) return;
 
     anticipados.add(medio);
     const enMarcha = !medio.paused;
     entrarEnObras(medio);
-    preparar(url)
+    // Se cuenta al pedirla, no al terminarla, y van de una en una: leer un
+    // vídeo entero y pasarlo a base64 es trabajo del hilo de la página, y en
+    // paralelo unos cuantos bastan para dejarla muerta.
+    adelantadas++;
+    colaAnticipada = colaAnticipada.then(() => preparar(url))
       .then((definitiva) => {
         // Sin copia, o la página cambió la fuente por debajo mientras tanto.
         if (definitiva === url || String(urlDe(nodo) || '') !== url) return;
@@ -954,7 +972,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
         try { medio.load(); } catch (e) { /* el medio ya no está */ }
       })
       .catch(() => { /* al pulsar play se intenta otra vez */ })
-      .then(() => { salirDeObras(medio); });
+      .then(() => { adelantadas--; salirDeObras(medio); });
   }
 
   // ── Reparación, cuando la anticipación no llegó a tiempo ─────────────────
@@ -1165,12 +1183,13 @@ pub fn fix_large_mp4_blobs_script() -> String {
     vigilarVisibilidad(medio);
     vigilarPuntero(medio);
     if (conFuente(urlDe(nodo))) aplazarPrecarga(medio);
-    // Aquí mismo, sin esperar a nada. Con `preload="none"` el motor no
-    // descarga datos, pero sí resuelve la fuente al recibirla: si la URL del
-    // blob no le sirve, marca «sin fuente» y dispara el error antes de que
-    // nadie pulse nada, así que esperar a un gesto llega tarde. El tope de
-    // copias limita cuántos se preparan; a los demás les llega su turno con
-    // el puntero encima o, en el peor caso, al pulsar.
+    // Un par por adelantado, y el resto cuando alguien se acerque. Con
+    // `preload="none"` el motor no descarga datos, pero sí resuelve la fuente
+    // al recibirla: si la URL del blob no le sirve, marca «sin fuente» y
+    // dispara el error antes de que nadie pulse nada, así que esperar a un
+    // gesto llega tarde y merece la pena adelantar unos pocos. A los demás
+    // les llega su turno con el puntero encima o, en el peor caso, al pulsar,
+    // y entonces `vigilarFallo` repara como hacía la 0.4.12.
     prepararPronto(medio);
   }
 

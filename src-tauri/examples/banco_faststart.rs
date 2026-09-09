@@ -367,6 +367,14 @@ const MUCHOS: &str = r#"
 <script>
   const CUANTOS = 24;
   (async () => {
+    // Cuántas lecturas de vídeo dispara entrar en el chat. La 0.4.13 lanzaba
+    // una por adjunto —cuarenta en el registro real— porque el cupo solo
+    // contaba las copias ya terminadas, y con eso el proceso web se iba al
+    // 45 % de CPU y a más de un giga. Aquí se cuentan.
+    let preparados = 0;
+    window.__wruspOrden = (o) => {
+      if (decodeURIComponent(String(o)).indexOf('entregado como data:') >= 0) preparados++;
+    };
     const bruto = atob(MP4_BASE64);
     const bytes = new Uint8Array(bruto.length);
     for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
@@ -385,8 +393,13 @@ const MUCHOS: &str = r#"
       videos.push(v);
     }
 
-    // Que el motor tenga tiempo de arrancar lo que vaya a arrancar.
+    // Que el motor tenga tiempo de arrancar lo que vaya a arrancar. Y que
+    // se note si la página se queda muerta: un temporizador de 100 ms que
+    // debería dispararse unas cuarenta veces en cuatro segundos.
+    let latidos = 0;
+    const pulso = setInterval(() => latidos++, 100);
     await new Promise((listo) => setTimeout(listo, 4000));
+    clearInterval(pulso);
     const precargando = videos.filter((v) => v.preload !== 'none').length;
     const conRed = videos.filter((v) => v.networkState === HTMLMediaElement.NETWORK_LOADING).length;
 
@@ -404,9 +417,15 @@ const MUCHOS: &str = r#"
     informe([
       ['los adjuntos inactivos no precargan', precargando === 0],
       ['ninguno abre pipeline por su cuenta', conRed === 0],
+      // Con el cupo puesto salen dos por adelantado y una del vídeo que se
+      // pulsa. Seis deja margen y sigue cantando si vuelve la regresión, que
+      // daba una lectura por adjunto.
+      ['entrar en el chat no lee todos los vídeos', preparados <= 6],
+      ['y la página sigue viva mientras tanto', latidos >= 25],
       ['el que se pulsa se reproduce', !fallo && elegido.currentTime > 0.2],
       ['ningún otro adjunto queda roto', rotos === 0],
     ], CUANTOS + ' adjuntos · precargando=' + precargando + ' cargando=' + conRed
+       + ' preparados=' + preparados + ' latidos=' + latidos
        + ' rotos=' + rotos + ' t=' + elegido.currentTime.toFixed(2) + ' ' + fallo);
   })();
 </script>

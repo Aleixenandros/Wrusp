@@ -4,6 +4,17 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.14] — 2026-09-09
+
+### Corregido
+
+- **Entrar en un chat con vídeos o GIF ya no cuelga la aplicación.** La 0.4.13 preparaba la fuente de cada vídeo al aparecer en el chat, y el cupo que debía limitar cuántos se preparaban a la vez solo contaba las copias ya terminadas. Como un chat registra todos sus vídeos en el mismo instante, ninguno había terminado todavía y **todos** pasaban la comprobación: cuarenta lecturas de fichero simultáneas en el registro real, con dos procesos del motor al 45 % de CPU y 2,3 GB entre ambos. Ahora las preparaciones se cuentan al pedirlas, van de una en una, y solo dos se adelantan sin que nadie muestre interés; el resto espera a que el ratón se acerque, o al momento de pulsar. Medido en el banco con dos docenas de adjuntos: 24 lecturas antes, 5 ahora, y la página responde durante todo el proceso.
+- **Menos memoria en vuelo:** el tope de copias baja de seis a cuatro.
+
+### Añadido
+
+- **La maqueta de los dos docenas de adjuntos cuenta ahora las lecturas y los latidos de la página**, así que una regresión como esta canta en el banco en vez de aparecer en un chat real.
+
 ## [0.4.13] — 2026-09-09
 
 ### Corregido
