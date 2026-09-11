@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.16] — 2026-09-11
+
+### Corregido
+
+- **WhatsApp vuelve a poder medir los vídeos.** La 0.4.15 solo le daba su fuente a un vídeo cuando alguien lo reproducía. WhatsApp mide cada vídeo (dimensiones y duración) con una sonda que lo carga sin reproducirlo nunca, así que esa sonda esperaba hasta rendirse: «video-load-timeout» en el registro a los pocos minutos de instalarla. Ahora pedir la carga de un vídeo le entrega su fuente igual que reproducirlo.
+
+### Añadido
+
+- **Maqueta de la sonda de WhatsApp en `banco_faststart`**, copiada paso a paso de su código público. Falla con la 0.4.15 y pasa con el arreglo.
+
 ## [0.4.15] — 2026-09-11
 
 ### Corregido

@@ -1040,6 +1040,55 @@ const GIF_SIN_CAMBIO: &str = r#"
 </script>
 "#;
 
+/// Maqueta 12 — la sonda con la que WhatsApp mide un vídeo (`MediaLoad`, en
+/// su código público, copiada paso a paso): un <video> suelto, fuera del
+/// documento, con `crossOrigin`, el blob, `load()` y `currentTime = 1`; espera
+/// `loadedmetadata` y `canplaythrough`, vuelve a 0 y espera el `seeked`, sin
+/// llamar nunca a `play()`. WhatsApp da el vídeo por perdido a los 20 s
+/// («video-load-timeout»). La 0.4.15 retenía la fuente hasta el `play()` y
+/// esta sonda no acababa nunca: salió en el registro real a los pocos minutos
+/// de instalarla.
+const SONDA_WHATSAPP: &str = r#"
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'video/mp4' });
+    const t0 = performance.now();
+    const i = document.createElement('video');
+    i.setAttribute('crossOrigin', 'anonymous');
+    i.volume = 0;
+    i.muted = true;
+    i.playsinline = true;
+    let meta = false, listo = false, error = '';
+    const r = await new Promise((resolver) => {
+      const p = () => { if (meta && listo) resolver('ok'); };
+      i.onloadedmetadata = () => { i.onloadedmetadata = null; meta = true; p(); };
+      i.oncanplaythrough = () => {
+        i.oncanplaythrough = null;
+        i.onseeked = () => { listo = true; i.onseeked = null; p(); };
+        i.currentTime = 0;
+      };
+      i.onerror = () => { error = ' error ' + (i.error ? i.error.code : '?'); resolver('error'); };
+      i.src = URL.createObjectURL(blob);
+      i.load();
+      i.currentTime = 1;
+      setTimeout(() => resolver('plazo agotado'), 10000);
+    });
+    const ms = performance.now() - t0;
+    const ancho = i.videoWidth, alto = i.videoHeight, duracion = i.duration;
+    // Y lo que hace WhatsApp al terminar con ella.
+    i.pause(); i.src = ''; i.load();
+    informe([
+      ['la sonda termina sin reproducir', r === 'ok'],
+      ['con dimensiones y duración', ancho > 0 && duracion > 5],
+    ], 'resultado=' + r + ' en ' + ms.toFixed(0) + ' ms · ' + ancho + 'x' + alto + ' duración=' + duracion + error);
+  })();
+</script>
+"#;
+
 /// Descriptores del `dbus-broker` de la sesión de este usuario. Cada `<video>`
 /// con fuente abre una conexión propia al bus y no la suelta hasta que el
 /// recolector destruye el elemento (ADR-042): un banco con cientos de vídeos
@@ -1273,6 +1322,11 @@ fn main() {
             correr(
                 "Un GIF recibe su fuente una sola vez",
                 &GIF_SIN_CAMBIO.replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
+            correr(
+                "La sonda de WhatsApp mide el vídeo sin reproducirlo",
+                &SONDA_WHATSAPP.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
             if let Some(ordenado) = video_ordenado() {

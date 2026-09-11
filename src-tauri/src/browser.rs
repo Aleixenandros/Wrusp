@@ -578,6 +578,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const crearUrl = URL.createObjectURL;
   const revocarUrl = URL.revokeObjectURL;
   const reproducirNativo = HTMLMediaElement.prototype.play;
+  const cargarNativo = HTMLMediaElement.prototype.load;
   const descriptorMedio = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
   const descriptorFuente = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
   const descriptorPrecarga = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');
@@ -990,6 +991,20 @@ pub fn fix_large_mp4_blobs_script() -> String {
     const pendientes = entregarTodas(medio, true);
     if (!pendientes.length) return reproducirNativo.call(medio);
     return Promise.all(pendientes).then(() => reproducirNativo.call(medio));
+  };
+
+  // `load()` pide la carga tanto como `play()`. La sonda con la que WhatsApp
+  // mide un vídeo (`MediaLoad`, en su código público) crea un <video> suelto,
+  // le pone el blob, llama a `load()` y espera `loadedmetadata` y
+  // `canplaythrough` sin reproducir nunca; a los 20 s lo da por perdido
+  // («video-load-timeout»). La 0.4.15 solo entregaba la fuente con `play()`, y
+  // esa sonda no acababa. Si el nodo espera su fuente, la entrega hace las
+  // veces de `load()`: poner la fuente ya arranca la carga, y cargar ahora sin
+  // ella solo sería un paso más del motor para nada.
+  HTMLMediaElement.prototype.load = function () {
+    vigilarFallo(this);
+    if (!entregarTodas(this, true).length) return cargarNativo.call(this);
+    ponerPrecarga(this, 'auto');
   };
 
   URL.createObjectURL = function (objeto) {
