@@ -28,7 +28,12 @@ fn script() -> String {
     if std::env::var_os("WRUSP_BANCO_SIN_SCRIPT").is_some() {
         return String::new();
     }
-    let fuente = include_str!("../src/browser.rs");
+    // Y para ver que una maqueta nueva canta con la versión anterior:
+    // `WRUSP_BANCO_BROWSER=ruta/al/browser.rs` de otra versión.
+    let fuente = match std::env::var("WRUSP_BANCO_BROWSER") {
+        Ok(ruta) => std::fs::read_to_string(ruta).expect("no se puede leer WRUSP_BANCO_BROWSER"),
+        Err(_) => include_str!("../src/browser.rs").to_string(),
+    };
     let inicio = fuente
         .find("pub fn fix_large_mp4_blobs_script() -> String {")
         .expect("la función cambió de nombre");
@@ -433,10 +438,9 @@ const MUCHOS: &str = r#"
 
 /// Maqueta 4 — `autoplay`, que es como WhatsApp pone los GIF y las
 /// previsualizaciones silenciosas. No pasa por `play()`: el motor carga la
-/// fuente original en cuanto la recibe y falla con código 4 antes de que
-/// nadie pueda reordenarla. Desde la 0.4.4 ese fallo se daba por transitorio
-/// y el vídeo quedaba muerto (y WhatsApp reintentando). Ahora el fallo es el
-/// disparador: se reordena y se reintenta.
+/// fuente en cuanto la recibe. Hasta la 0.4.14 recibía el blob, fallaba, y
+/// Wrusp le cambiaba la fuente después; desde la 0.4.15 recibe directamente
+/// la `data:` (ADR-043), y tiene que arrancar sin que nadie lo toque.
 ///
 /// Y de paso lo de la visibilidad: un GIF que sale de la pantalla se pausa,
 /// pero al volver tiene que seguir; la 0.4.4 lo dejaba congelado.
@@ -732,69 +736,66 @@ PRUEBA_SALTO
 </script>
 "#;
 
-/// Maqueta 8 — la fuente lista antes de que nadie la pida. Un vídeo visible
-/// tiene que pasar a `data:` por su cuenta, sin `play()` y sin que el motor
-/// haya llegado a fallar, que es lo que en la 0.4.12 se veía como un error de
-/// un instante o como un salto al mover la barra.
-const ANTICIPADA: &str = r#"
+/// Maqueta 8 — la fuente retenida (ADR-043). WhatsApp asigna el blob a un
+/// vídeo que nadie ha pulsado: el elemento no recibe fuente real hasta el
+/// `play()`, así que no tiene reproductor que destruir ni conexión al bus, y
+/// al pulsar recibe la `data:` definitiva de una vez. La página, mientras,
+/// sigue viendo en `src` el blob que puso. Y cuando WhatsApp vuelve a asignar
+/// el mismo blob al repintar, no se recarga nada. Con la 0.4.14 canta: la
+/// fuente real pasaba por el blob y después por la `data:`, y la reasignación
+/// desmontaba el reproductor en marcha.
+const RETENIDA: &str = r#"
 <video id="v" muted playsinline style="width:240px;display:block"></video>
-<div id="relleno"></div>
-<div id="lejos" style="height:3000px"></div>
-<div id="envoltorio"><video id="w" muted playsinline style="width:240px;display:block"></video></div>
 <script>SCRIPT</script>
 <script>
   (async () => {
     const bruto = atob(MP4_BASE64);
     const bytes = new Uint8Array(bruto.length);
     for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const espera = (ms) => new Promise((l) => setTimeout(l, ms));
     const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
     const v = document.getElementById('v');
     let errores = 0;
     v.addEventListener('error', () => errores++);
-    v.src = url;   // visible, sin autoplay y sin play()
+    // `currentSrc` es la fuente que tiene el motor, y el script no la disfraza.
+    const vistas = [];
+    let previa = '';
+    const muestreo = setInterval(() => {
+      const c = v.currentSrc || '';
+      if (c !== previa) { vistas.push(c.slice(0, 5) || 'nada'); previa = c; }
+    }, 10);
+    v.src = url;   // sin autoplay y sin play()
 
     // Lo que hace el usuario: mirar el chat un momento antes de pulsar.
-    await new Promise((l) => setTimeout(l, 3000));
-    const antesDePlay = v.src;
-    const erroresAntes = errores;
+    await espera(2000);
+    const vistoPorLaPagina = v.src;
+    const realAntes = v.currentSrc;
+    const redAntes = v.networkState;
     const precarga = v.preload;
+    const erroresAntes = errores;
 
-    try { await v.play(); } catch (e) { /* interesa el estado, no la promesa */ }
-    await new Promise((l) => setTimeout(l, 3000));
+    let promesa = 'pendiente';
+    try { await v.play(); promesa = 'resuelta'; } catch (e) { promesa = 'rechazada:' + e.name; }
+    await espera(3000);
+    const arranco = v.currentSrc.indexOf('data:') === 0 && v.currentTime > 0.5 && !v.paused;
 
-    // Y el otro disparador: el ratón. Para probarlo hay que agotar antes el
-    // cupo de copias, que es justo lo que pasa en un chat largo: los primeros
-    // vídeos se llevan las copias y el resto espera a que alguien se acerque.
-    const relleno = document.getElementById('relleno');
-    for (let i = 0; i < 8; i++) {
-      const r = document.createElement('video');
-      r.muted = true;
-      r.style.cssText = 'width:60px';
-      relleno.appendChild(r);
-      r.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
-    }
-    await new Promise((l) => setTimeout(l, 4000));
-
-    const w = document.getElementById('w');
-    const urlW = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
-    w.src = urlW;
-    await new Promise((l) => setTimeout(l, 2000));
-    const antesDelRaton = w.src;
-    document.getElementById('envoltorio').dispatchEvent(
-      new PointerEvent('pointerenter', { bubbles: false }));
-    await new Promise((l) => setTimeout(l, 3000));
-
+    // WhatsApp repinta y vuelve a asignar el mismo blob.
+    const t = v.currentTime;
+    v.src = url;
+    await espera(1000);
+    clearInterval(muestreo);
+    const reales = vistas.filter((x) => x !== 'nada');
     informe([
-      ['la fuente ya es data: sin que nadie pulse', antesDePlay.indexOf('data:') === 0],
-      ['dejarla lista no la precarga', precarga === 'none'],
-      ['el motor no ha fallado antes del play', erroresAntes === 0],
-      ['reproduce al pulsar', v.currentTime > 0.5 && !v.paused],
+      ['la página ve el blob que puso', vistoPorLaPagina === url],
+      ['sin pulsar, el motor no tiene fuente', realAntes === '' && redAntes === HTMLMediaElement.NETWORK_EMPTY],
+      ['ni precarga', precarga === 'none'],
+      ['ni falla', erroresAntes === 0],
+      ['al pulsar arranca con data:', promesa === 'resuelta' && arranco],
+      ['reasignar el mismo blob no lo recarga', v.currentTime > t && !v.paused],
+      ['su fuente real se fija una vez', reales.length === 1],
       ['y sin ningún error', errores === 0],
-      ['con el cupo lleno, un vídeo más espera su turno', antesDelRaton.indexOf('blob:') === 0],
-      ['y el puntero sobre su contenedor lo prepara', w.src.indexOf('data:') === 0],
-    ], 'antes=' + antesDePlay.slice(0, 12) + ' preload=' + precarga
-      + ' errores=' + errores + ' t=' + v.currentTime.toFixed(2)
-      + ' · lejano antes=' + antesDelRaton.slice(0, 12) + ' después=' + w.src.slice(0, 12));
+    ], 'fuentes: ' + vistas.join(' ') + ' · red antes=' + redAntes + ' preload=' + precarga
+      + ' play=' + promesa + ' t=' + t.toFixed(2) + '→' + v.currentTime.toFixed(2) + ' errores=' + errores);
   })();
 </script>
 "#;
@@ -970,8 +971,110 @@ const HOSTILES: &str = r#"
 </script>
 "#;
 
+/// Maqueta 10 — el cuelgue capturado en uso real el 11-09-2026: cambiar la
+/// fuente de un `<video>` que ya tiene reproductor destruye el pipeline de
+/// GStreamer **en el hilo principal**, y esa destrucción espera el cerrojo de
+/// un *pad* que tiene cogido un hilo de GStreamer. Aquí se mide cuánto dura
+/// ese cambio, sin scripts de Wrusp: es el coste de hacerlo.
+const COSTE_CAMBIO: &str = r#"
+<video id="v" autoplay muted loop playsinline style="width:320px"></video>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const espera = (ms) => new Promise((l) => setTimeout(l, ms));
+    const v = document.getElementById('v');
+    const tiempos = [];
+    for (let i = 0; i < 4; i++) {
+      v.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+      await espera(2500);                    // que suene de verdad
+      const sonaba = !v.paused && v.currentTime > 0.3;
+      const t0 = performance.now();
+      v.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+      tiempos.push((performance.now() - t0).toFixed(0) + (sonaba ? '' : '?'));
+      await espera(1500);
+    }
+    informe([['la medida termina', true]],
+      'cambiar la fuente de un vídeo que suena bloquea el hilo: ' + tiempos.join(', ') + ' ms');
+  })();
+</script>
+"#;
+
+/// Maqueta 11 — lo que hace Wrusp con un GIF: un `<video autoplay loop>` con
+/// fuente `blob:`. Cambiar la fuente de un elemento que ya tiene reproductor
+/// destruye su pipeline en el hilo principal (maqueta 10), y en uso real,
+/// sobre un reproductor que acababa de fallar, esa destrucción dejó WhatsApp
+/// parado más de dos minutos esperando un cerrojo de GStreamer. La regla que
+/// se comprueba es estricta: la fuente **real** del elemento (`currentSrc`,
+/// que el script no puede disfrazar) se fija una vez y no cambia nunca.
+const GIF_SIN_CAMBIO: &str = r#"
+<video id="v" autoplay muted loop playsinline style="width:320px"></video>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const espera = (ms) => new Promise((l) => setTimeout(l, ms));
+    const v = document.getElementById('v');
+    let ultimo = performance.now(), peor = 0;
+    const pulso = setInterval(() => { const a = performance.now(); peor = Math.max(peor, a - ultimo - 16); ultimo = a; }, 16);
+    const vistas = [];
+    let previa = '', empezo = false;
+    v.addEventListener('playing', () => { empezo = true; });
+    const muestreo = setInterval(() => {
+      const c = v.currentSrc || '';
+      if (c !== previa) { vistas.push((empezo ? 'sonando→' : 'antes→') + (c.slice(0, 5) || 'nada')); previa = c; }
+    }, 10);
+    v.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    await espera(6000);
+    clearInterval(muestreo); clearInterval(pulso);
+    const reales = vistas.filter((x) => !x.endsWith('→nada'));
+    informe([
+      ['el GIF arranca', !v.paused && v.currentTime > 0.5],
+      ['su fuente real se fija una vez y no cambia', reales.length === 1],
+    ], 'fuentes: ' + vistas.join(' ') + ' · peor latido ' + peor.toFixed(0) + ' ms');
+  })();
+</script>
+"#;
+
+/// Descriptores del `dbus-broker` de la sesión de este usuario. Cada `<video>`
+/// con fuente abre una conexión propia al bus y no la suelta hasta que el
+/// recolector destruye el elemento (ADR-042): un banco con cientos de vídeos
+/// tumbó el escritorio el 11-09-2026.
+fn fds_bus() -> Option<usize> {
+    let yo = std::fs::read_to_string("/proc/self/status").ok()?;
+    let uid = yo
+        .lines()
+        .find(|l| l.starts_with("Uid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .to_string();
+    for e in std::fs::read_dir("/proc").ok()?.flatten() {
+        let ruta = e.path();
+        let Ok(st) = std::fs::read_to_string(ruta.join("status")) else {
+            continue;
+        };
+        let nombre = st.lines().next().unwrap_or("");
+        let suyo = st
+            .lines()
+            .find(|l| l.starts_with("Uid:"))
+            .and_then(|l| l.split_whitespace().nth(1));
+        if nombre.ends_with("dbus-broker") && suyo == Some(uid.as_str()) {
+            return std::fs::read_dir(ruta.join("fd")).ok().map(|d| d.count());
+        }
+    }
+    None
+}
+
+/// Descriptores de más en el bus antes de parar el banco en seco.
+const FRENO_BUS: usize = 150;
+
 fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>) {
     let nombre_para_tiempo = nombre;
+    let base_bus = fds_bus().unwrap_or(0);
     // `WRUSP_BANCO_SOLO=texto` corre solo las maquetas cuyo nombre lo contenga.
     if let Ok(solo) = std::env::var("WRUSP_BANCO_SOLO") {
         if !nombre.contains(&solo) {
@@ -1060,7 +1163,16 @@ fn correr(nombre: &str, maqueta: &str, fallos: std::rc::Rc<std::cell::Cell<u32>>
             gtk::glib::ControlFlow::Break
         },
     )));
+    // El freno: si el bus de sesión crece de más, se para antes de tumbarlo.
+    let freno = gtk::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+        if fds_bus().unwrap_or(0) > base_bus + FRENO_BUS {
+            eprintln!("FRENO: el bus de sesión ha crecido de más; se para el banco");
+            std::process::exit(2);
+        }
+        gtk::glib::ControlFlow::Continue
+    });
     gtk::main();
+    freno.remove();
     if let Some(id) = temporizador.take() {
         id.remove();
     }
@@ -1117,12 +1229,12 @@ fn main() {
                 fallos.clone(),
             );
             correr(
-                "La fuente lista antes de que nadie la pida",
-                &ANTICIPADA.replace("MP4_BASE64", &incrustado),
+                "La fuente se retiene hasta que se pulsa",
+                &RETENIDA.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
             correr(
-                "Autoplay: se repara al fallar, y vuelve tras salir de pantalla",
+                "Autoplay: la fuente llega antes de arrancar, y vuelve tras salir de pantalla",
                 &AUTOPLAY.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
@@ -1151,6 +1263,18 @@ fn main() {
                     );
                 }
             }
+            correr(
+                "Cambio de fuente: cuánto bloquea desmontar un vídeo que suena",
+                &COSTE_CAMBIO
+                    .replace("<script>SCRIPT</script>", "")
+                    .replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
+            correr(
+                "Un GIF recibe su fuente una sola vez",
+                &GIF_SIN_CAMBIO.replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
             if let Some(ordenado) = video_ordenado() {
                 let incrustado = format!("'{}'", base64(&ordenado));
                 correr(

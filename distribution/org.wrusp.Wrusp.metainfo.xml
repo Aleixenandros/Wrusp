@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.15" date="2026-09-11">
+      <description>
+        <p>La aplicación ya no se congela al reproducir vídeos y GIF: la fuente de cada vídeo se entrega una sola vez, ya preparada, en vez de cambiarse después de un fallo. Los vídeos que no se reproducen no abren reproductor.</p>
+      </description>
+    </release>
     <release version="0.4.14" date="2026-09-09">
       <description>
         <p>Entrar en un chat con vídeos o GIF ya no cuelga la aplicación: la preparación de las fuentes se limita y se hace de una en una.</p>

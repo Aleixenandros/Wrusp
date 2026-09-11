@@ -228,6 +228,13 @@ pub fn hide_webcodecs_script() -> String {
 /// el proceso web; como `data:` arrancan y saltan (ADR-039). El remux de más
 /// abajo se conserva para los que además traen el índice al final.
 ///
+/// Desde la 0.4.15 la fuente de un elemento se fija **una sola vez** (ADR-043):
+/// Wrusp retiene el blob que asigna WhatsApp y entrega la `data:` al elemento
+/// cuando se va a reproducir, en vez de cambiarle la fuente a un reproductor
+/// que ya existe. Ese cambio destruye el pipeline de GStreamer en el hilo
+/// principal, y sobre un reproductor que acababa de fallar dejó WhatsApp
+/// congelado más de dos minutos esperando un cerrojo.
+///
 /// WebKitGTK 2.52 entrega los blobs al demuxer a través de un búfer circular
 /// pequeño. Cuando el MP4 es mayor que ese búfer y trae su índice (`moov`) al
 /// final —la forma habitual en que WhatsApp entrega los vídeos—, `qtdemux`
@@ -534,35 +541,39 @@ pub fn fix_large_mp4_blobs_script() -> String {
   };
 
   // ── Puente con la página ─────────────────────────────────────────────────
+  //
+  // La regla, desde la 0.4.15 (ADR-043): **la fuente de un elemento que ya
+  // tiene reproductor no se cambia nunca.** Cambiarla, o quitarla, destruye su
+  // pipeline de GStreamer en el hilo principal, y en uso real, sobre un
+  // reproductor que acababa de fallar, esa destrucción se quedó esperando el
+  // cerrojo de un pad que tenía cogido un hilo de GStreamer, parado a su vez a
+  // la espera del preroll: WhatsApp congelado más de dos minutos, capturado con
+  // `eu-stack` en el volcado del proceso.
+  //
+  // Así que Wrusp ya no repara nada después: decide la fuente antes. Cuando
+  // WhatsApp asigna un blob de vídeo a un elemento sin fuente real, Wrusp se lo
+  // guarda y le entrega la definitiva una sola vez —la `data:` que el motor sí
+  // sabe leer (ADR-039), reordenada si hacía falta—: enseguida si se reproduce
+  // solo (los GIF) o cuando alguien lo pulsa. Hasta entonces el elemento no
+  // tiene reproductor que destruir, no abre su conexión al bus de sesión
+  // (ADR-042) y no ocupa memoria de copia.
 
   const esMedio = /^(video\/|audio\/|application\/mp4|application\/octet-stream)/i;
   const esVideo = /^video\//i;
   // Un blob sin tipo puede ser un vídeo —WhatsApp no siempre lo etiqueta—,
-  // pero por debajo de este tamaño cabe entero en el búfer del motor y no hay
-  // nada que reordenar: miniaturas, stickers y notas de voz cortas se quedan
-  // fuera y no ocupan sitio en el mapa.
+  // pero por debajo de este tamaño son miniaturas, stickers y notas de voz
+  // cortas, y se quedan fuera del mapa.
   const MIN_SIN_TIPO = 64 * 1024;
-  // Copias `data:` vivas como mucho. Son la única memoria que añade Wrusp: el
-  // blob original lo retiene la propia URL de WhatsApp hasta que la revoca, y
-  // la copia cuesta cuatro tercios del fichero. Al pasar del tope se suelta la
-  // más antigua que ningún reproductor conectado esté usando; si vuelve a
-  // hacer falta, se regenera.
-  //
-  // La 0.4.4 acotaba el mapa de candidatos entero, y con ello expulsaba
-  // vídeos que WhatsApp aún no había reproducido: al pulsarlos ya no eran
-  // candidatos y fallaban sin remedio. Lo que se acota es la copia, nunca el
-  // candidato.
+  // Copias `data:` sin elemento conectado que se guardan por si vuelven a
+  // hacer falta. Las que están puestas en un elemento no se sueltan: viven lo
+  // que viva él. La copia cuesta cuatro tercios del fichero.
   const MAX_COPIAS = 4;
-  // Preparaciones por adelantado que se permiten sin que nadie haya mostrado
-  // interés. Deliberadamente bajo: entrar en un chat registra todos sus
-  // vídeos en el mismo instante, y la 0.4.13 lanzó cuarenta lecturas a la vez
-  // porque el cupo solo contaba las copias ya terminadas. Dos procesos web al
-  // 45 % de CPU y 2,3 GB entre ambos, medido en el registro real. Lo demás
-  // espera al puntero, que es cuando hay intención de reproducir.
-  const MAX_ADELANTADAS = 2;
-  // Por encima de esto el vídeo se queda como blob: la copia ocupa cuatro
+  // Por encima de esto el vídeo va como blob: la copia ocuparía cuatro
   // tercios del fichero en la página más lo que el motor decodifique.
   const MAX_DATA = 64 * 1024 * 1024;
+  // Si preparar la copia tarda más que esto, el elemento recibe el blob tal
+  // cual: mejor el camino de siempre que un vídeo que no arranca nunca.
+  const PLAZO_PREPARAR = 8000;
 
   const crearUrl = URL.createObjectURL;
   const revocarUrl = URL.revokeObjectURL;
@@ -570,53 +581,39 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const descriptorMedio = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
   const descriptorFuente = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
   const descriptorPrecarga = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'preload');
+  const descriptorAutoplay = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'autoplay');
   const ponerAtributo = Element.prototype.setAttribute;
+  const quitarAtributo = Element.prototype.removeAttribute;
 
   const candidatos = new Map();     // url del blob → { blob, copia, definitiva, trabajo, motivo }
   const conCopia = [];              // urls de blob con copia viva, de vieja a nueva
-  const fallidas = new Set();       // urls que ya reventaron: no se reintentan
   const vigilados = new WeakSet();
-  // Cuántas preparaciones tiene un medio en vuelo. Un contador y no una
-  // marca: la anticipada y el `play()` pueden solaparse sobre el mismo
-  // elemento, y con un booleano el primero en terminar dejaba al otro sin
-  // protección. Un error que llegase en ese hueco lo tomaba `vigilarFallo`
-  // por definitivo y desmontaba un reproductor que solo estaba cambiando de
-  // fuente.
-  const obras = new WeakMap();
-  const entrarEnObras = (medio) => obras.set(medio, (obras.get(medio) || 0) + 1);
-  const salirDeObras = (medio) => {
-    const quedan = (obras.get(medio) || 1) - 1;
-    if (quedan > 0) obras.set(medio, quedan);
-    else obras.delete(medio);
-  };
-  const estaEnObras = (medio) => (obras.get(medio) || 0) > 0;
-  const reparados = new WeakSet();  // medios a los que ya se les cambió la fuente tras un fallo
-  const anticipados = new WeakSet();// medios que ya se prepararon por adelantado
-  let adelantadas = 0;              // preparaciones por adelantado encoladas o en marcha
-  let colaAnticipada = Promise.resolve(); // van de una en una
-  const esperandoPuntero = new WeakSet(); // medios con el disparador de puntero puesto
+  const sondeados = new WeakSet();  // medios con fuente remota ya sondeada tras un fallo
+  const esperas = new WeakMap();    // nodo retenido → { url, promesa } de su entrega
   const pausadosPorWrusp = new WeakSet();
   let sinFuenteAnotado = false;     // el aviso de `src=""` sale una vez por vista
+  // Las copias se preparan de una en una: leer un vídeo entero y pasarlo a
+  // base64 es trabajo del hilo de la página, y en paralelo unos cuantos bastan
+  // para dejarla muerta (ADR-041).
+  let cola = Promise.resolve();
 
   const anotar = (texto) => {
     if (window.__wruspOrden) window.__wruspOrden('log/?m=' + encodeURIComponent(texto));
   };
 
-  // ── De qué blob salió la fuente de un medio ──────────────────────────────
-  // Se marca el nodo al sustituirle la fuente, en vez de buscar la URL en un
-  // mapa. Una `data:` de diez megas es una cadena de diez megas: usarla como
-  // clave o compararla nodo a nodo cuesta recorrerla entera cada vez.
+  // ── Marcas en el nodo ────────────────────────────────────────────────────
+  // En el propio nodo y no en un mapa: una `data:` de diez megas es una cadena
+  // de diez megas, y usarla como clave cuesta recorrerla entera cada vez.
+  //
+  // `__wruspOrigen`: de qué blob salió la `data:` que lleva el nodo.
+  // `__wruspRetenida`: el blob que WhatsApp le asignó y aún no se le entrega.
 
   const marcar = (nodo, origen) => { nodo.__wruspOrigen = origen; };
   const olvidarMarca = (nodo) => { if (nodo.__wruspOrigen) delete nodo.__wruspOrigen; };
-
-  /// El nodo cuya fuente sustituyó Wrusp, y el blob del que salió.
-  function sustituido(medio) {
-    if (medio.__wruspOrigen) return { nodo: medio, url: medio.__wruspOrigen };
-    for (const fuente of medio.querySelectorAll('source'))
-      if (fuente.__wruspOrigen) return { nodo: fuente, url: fuente.__wruspOrigen };
-    return null;
-  }
+  const retenidaDe = (nodo) => nodo.__wruspRetenida;
+  const soltarRetenida = (nodo) => {
+    if (nodo.__wruspRetenida !== undefined) delete nodo.__wruspRetenida;
+  };
 
   const enUso = (url) => !!url && Array.prototype.some.call(
     document.querySelectorAll('video, audio, source'),
@@ -625,9 +622,6 @@ pub fn fix_large_mp4_blobs_script() -> String {
   function soltarCopia(url) {
     const entrada = candidatos.get(url);
     if (!entrada || !entrada.copia) return;
-    if (entrada.copia.indexOf('blob:') === 0) {
-      try { revocarUrl.call(URL, entrada.copia); } catch (e) { /* ya no existía */ }
-    }
     entrada.copia = null;
     entrada.definitiva = null;
     entrada.trabajo = null;
@@ -636,49 +630,24 @@ pub fn fix_large_mp4_blobs_script() -> String {
   function recordarCopia(url) {
     conCopia.push(url);
     while (conCopia.length > MAX_COPIAS) {
-      // Nunca la recién llegada, que es la que alguien está esperando ahora
-      // mismo: soltarla aquí dejaba a `preparar` devolviendo una fuente vacía
-      // y el vídeo que se acababa de pulsar fallaba con «formato no
-      // admitido». Aún no puede estar «en uso» porque la fuente se cambia
-      // después, así que la búsqueda la habría elegido a ella.
-      const candidatas = conCopia.slice(0, -1);
-      const i = candidatas.findIndex((u) => {
-        const e = candidatos.get(u);
-        return !e || !enUso(u);
-      });
+      // Nunca la recién llegada: es la que alguien está esperando ahora mismo,
+      // y aún no está «en uso» porque se entrega después (0.4.13).
+      const i = conCopia.slice(0, -1).findIndex((u) => !enUso(u));
       if (i < 0) break; // todas en uso: se espera a que alguna se quede sola
       const [vieja] = conCopia.splice(i, 1);
       soltarCopia(vieja);
     }
   }
 
-  /// ¿Cabe otra copia sin desalojar a nadie? Lo pregunta la preparación
-  /// anticipada, que es un lujo: si no hay sitio, el vídeo espera a que lo
-  /// pulsen y entonces se prepara igual, desalojando si hace falta.
-  /// Copias contadas: las vivas más las pedidas y aún sin terminar. Contar
-  /// solo las vivas es lo que colgó la 0.4.13: `conCopia` crece cuando una
-  /// copia **termina**, así que los treinta vídeos que un chat registra en el
-  /// mismo instante pasaban todos la comprobación y pedían su lectura a la vez.
-  const copiasContadas = () => conCopia.length + adelantadas;
-  const cabeOtraCopia = (tope) => copiasContadas() < (tope || MAX_COPIAS);
-
   // ── Visibilidad ──────────────────────────────────────────────────────────
-  // El observador pausa los vídeos con autoplay que salen de la pantalla,
-  // porque un GIF fuera de vista sigue decodificando y con decenas de ellos
-  // eso satura la CPU, y los reanuda al volver —lo que faltaba en la 0.4.4,
-  // que los dejaba congelados en un fotograma para siempre—. De paso deja
-  // lista la fuente de los que entran.
+  // Pausa los vídeos con autoplay que salen de la pantalla, porque un GIF
+  // fuera de vista sigue decodificando, y reanuda al volver los que pausó
+  // Wrusp. Pausar no toca la fuente ni el pipeline. En WebKitGTK 2.52 el
+  // observador solo avisa de forma fiable la primera vez (ADR-040), así que es
+  // un ahorro cuando llega, no algo de lo que dependa nada.
   //
-  // **No se puede confiar en él para lo segundo.** Medido en el banco con
-  // WebKitGTK 2.52: notifica la primera vez, al aparecer el elemento, y
-  // después de un desplazamiento no vuelve a notificar —tampoco un observador
-  // ajeno a Wrusp puesto sobre el mismo <video>, así que es del motor y no de
-  // este script—. Por eso la preparación anticipada se dispara además al
-  // registrar el nodo y con el puntero encima, que sí llegan siempre.
-  //
-  // Se observa al registrar el nodo y nunca dentro de `play()`. Observar allí
-  // dejaba un <video> sin tamaño propio cargando sin llegar a tener metadatos
-  // (readyState 0, «stalled»), medido en el banco.
+  // Se observa al registrar el nodo y nunca dentro de `play()`: observar allí
+  // dejaba un <video> sin tamaño propio cargando sin llegar a tener metadatos.
   let visorInterseccion = null;
   if (typeof IntersectionObserver === 'function') {
     visorInterseccion = new IntersectionObserver((entradas) => {
@@ -697,7 +666,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
           }
           continue;
         }
-        prepararPronto(medio);
+        // Un GIF que se quedó sin turno porque salió del chat antes de tiempo.
+        if (medio.autoplay) entregarTodas(medio, false);
         if (pausadosPorWrusp.has(medio)) {
           pausadosPorWrusp.delete(medio);
           if (medio.paused && !medio.ended) {
@@ -724,12 +694,22 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return null;
   }
 
+  // La fuente que tiene de verdad el motor, sin el disfraz de las retenidas.
   function urlDe(nodo) {
     if (nodo instanceof HTMLMediaElement && descriptorMedio && descriptorMedio.get)
       return descriptorMedio.get.call(nodo);
     if (nodo instanceof HTMLSourceElement && descriptorFuente && descriptorFuente.get)
       return descriptorFuente.get.call(nodo);
     return nodo.getAttribute('src') || '';
+  }
+
+  // ¿Tiene el nodo una fuente de verdad? `src=""`, que WhatsApp pone a los
+  // vídeos que aún no ha descargado, no cuenta: el motor falla al resolverla
+  // sin llegar a elegir reproductor, así que no hay pipeline que destruir (y
+  // tampoco abre conexión al bus, medido en ADR-042).
+  function tieneFuenteReal(nodo) {
+    const atributo = nodo.getAttribute('src');
+    return atributo !== null && atributo.trim() !== '';
   }
 
   function ponerUrl(nodo, url, origen) {
@@ -739,11 +719,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
       descriptorFuente.set.call(nodo, url);
     else
       ponerAtributo.call(nodo, 'src', url);
-    // Después de asignar, porque quien asigna desde la página borra la marca.
     if (origen) marcar(nodo, origen);
   }
 
-  // WebKitGTK levanta un pipeline de GStreamer por cada medio del documento
+  // WebKitGTK levanta un pipeline de GStreamer por cada medio con fuente
   // aunque nadie lo reproduzca: un chat con decenas de vídeos y notas de voz
   // llegaba a saturar la CPU. La precarga se devuelve al reproducir.
   function aplazarPrecarga(medio) {
@@ -753,42 +732,11 @@ pub fn fix_large_mp4_blobs_script() -> String {
       descriptorPrecarga.set.call(medio, 'none');
   }
 
-  const precargaDe = (medio) =>
-    descriptorPrecarga && descriptorPrecarga.get ? descriptorPrecarga.get.call(medio) : null;
   const ponerPrecarga = (medio, valor) => {
-    if (valor !== null && descriptorPrecarga && descriptorPrecarga.set)
-      descriptorPrecarga.set.call(medio, valor);
+    if (descriptorPrecarga && descriptorPrecarga.set) descriptorPrecarga.set.call(medio, valor);
   };
 
-  // El nodo que lleva la URL puede ser el propio medio o un <source> suyo.
-  function portador(medio) {
-    if (candidatos.has(String(urlDe(medio) || ''))) return medio;
-    for (const fuente of medio.querySelectorAll('source[src]'))
-      if (candidatos.has(String(urlDe(fuente) || ''))) return fuente;
-    return null;
-  }
-
-  // Desmonta el pipeline de un medio que no se puede reproducir. Sin esto el
-  // motor y WhatsApp se quedan reintentando, y cada intento vuelve a llenar
-  // el registro con miles de errores por segundo: eso es lo que dejaba la
-  // ventana sin responder (0.4.3). Se quita la fuente también de los <source>
-  // hijos: si no, `load()` la vuelve a elegir y el bucle sigue.
-  function detener(medio, url, mensaje) {
-    if (url) fallidas.add(url);
-    try {
-      medio.pause();
-      medio.removeAttribute('src');
-      olvidarMarca(medio);
-      for (const fuente of medio.querySelectorAll('source[src]')) {
-        fuente.removeAttribute('src');
-        olvidarMarca(fuente);
-      }
-      medio.load();
-    } catch (e) { /* el medio ya no está */ }
-    anotar(mensaje);
-  }
-
-  // ── Preparar la fuente ───────────────────────────────────────────────────
+  // ── Preparar la copia ────────────────────────────────────────────────────
 
   // Lectura nativa del blob como `data:` URL; para un vídeo de diez megas son
   // unas decenas de milisegundos y no pasa por JavaScript byte a byte.
@@ -799,17 +747,24 @@ pub fn fix_large_mp4_blobs_script() -> String {
     lector.readAsDataURL(blob);
   });
 
+  // Solo vídeo. El audio de las notas de voz nunca ha fallado como blob, y
+  // pasarlo por `data:` sería memoria a cambio de nada. Un blob sin tipo se
+  // trata como vídeo mientras el sondeo no diga que no es ni un MP4.
+  function llevaVideo(entrada) {
+    const tipo = entrada.blob.type || '';
+    if (tipo) return esVideo.test(tipo);
+    return !/^no es MP4/.test(entrada.motivo || '');
+  }
+
   // Deja lista la URL definitiva del blob y la guarda en `entrada.definitiva`
-  // **siempre**, aunque no haya nada que cambiar (ver el bucle de la 0.4.6).
+  // **siempre**, aunque sea la original (ver el bucle de la 0.4.6).
   //
   // Un vídeo se entrega al motor como `data:` URL, reordenado antes si traía
   // el índice al final. Medido con vídeos reales volcados de un chat
   // (ADR-039): como `blob:`, WebKitGTK 2.52 unas veces los rechaza sin leer un
-  // byte («formato no admitido», red 3), otras arranca y rompe al mover la
-  // barra, y otras cuelga el proceso web entero; como `data:` arrancan, saltan
-  // en menos de 150 ms y siguen. El mismo fichero, la misma página, el mismo
-  // motor: solo cambia por dónde llegan los bytes al demuxer. `MediaSource`
-  // con el fichero entero también cuelga, así que no es alternativa.
+  // byte, otras rompe al mover la barra y otras cuelga el proceso web; como
+  // `data:` arrancan y saltan. `MediaSource` con el fichero entero también
+  // cuelga, así que no es alternativa.
   function preparar(url) {
     const entrada = candidatos.get(url);
     if (!entrada) return Promise.resolve(url);
@@ -821,8 +776,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
         let fuente = entrada.blob;
         let nota = '';
         if (!motivo) {
-          const bytes = await entrada.blob.arrayBuffer();
-          const arreglado = reordenar(bytes);
+          const arreglado = reordenar(await entrada.blob.arrayBuffer());
           if (arreglado) {
             fuente = new Blob([arreglado], { type: entrada.blob.type || 'video/mp4' });
             nota = ', reordenado';
@@ -837,8 +791,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
           return url;
         }
         // En una variable propia: `recordarCopia` puede soltar copias, y lo
-        // que se devuelve tiene que ser la cadena que se acaba de leer pase
-        // lo que pase con el recuento.
+        // que se devuelve tiene que ser la cadena que se acaba de leer.
         const copia = await comoDataUrl(fuente);
         entrada.copia = copia;
         entrada.definitiva = copia;
@@ -854,194 +807,122 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return entrada.trabajo;
   }
 
-  // Solo vídeo. El audio de las notas de voz nunca ha fallado como blob, y
-  // pasarlo por `data:` sería memoria a cambio de nada. Un blob sin tipo se
-  // trata como vídeo mientras el sondeo no diga que no es ni un MP4.
-  function llevaVideo(entrada) {
-    const tipo = entrada.blob.type || '';
-    if (tipo) return esVideo.test(tipo);
-    return !/^no es MP4/.test(entrada.motivo || '');
-  }
+  const conPlazo = (promesa, ms, alternativa) => Promise.race([
+    promesa,
+    new Promise((listo) => setTimeout(() => listo(alternativa), ms)),
+  ]);
 
-  // Metadatos de la fuente actual, o `false` si llega un error o se agota el
-  // plazo. Para un blob local llegan en milisegundos.
-  function esperarMetadatos(medio, ms) {
-    if (medio.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve(true);
-    return new Promise((listo) => {
-      let temporizador = 0;
-      const fin = (ok) => {
-        clearTimeout(temporizador);
-        medio.removeEventListener('loadedmetadata', bien);
-        medio.removeEventListener('error', mal);
-        listo(ok);
-      };
-      const bien = () => fin(true);
-      const mal = () => fin(false);
-      temporizador = setTimeout(() => fin(false), ms);
-      medio.addEventListener('loadedmetadata', bien);
-      medio.addEventListener('error', mal);
-    });
-  }
+  // ── Fuente retenida ──────────────────────────────────────────────────────
 
-  // Sustituye la fuente conservando posición y estado, como haría una recarga
-  // normal del propio medio, y no devuelve el control hasta que la fuente
-  // nueva tiene metadatos.
-  //
-  // El orden importa: primero la fuente nueva y después la precarga. Al revés,
-  // devolver la precarga con la fuente vieja todavía puesta arrancaba la
-  // carga del blob original, y abortarla un instante después con `load()`
-  // dejaba a veces la fuente nueva cargando sin llegar a tener metadatos
-  // (medido en el banco: readyState 0, «stalled», la promesa de play() sin
-  // resolverse nunca; pasaba también con el script de la 0.4.3). Por si el
-  // motor se atasca igualmente, se espera a los metadatos y, si no llegan, se
-  // vuelve a cargar una vez.
-  function usar(medio, nodo, urlNueva, origen) {
-    // Una fuente vacía deja el medio con `src="null"` y un código 4 que no es
-    // del fichero sino nuestro. Antes de tocar nada, se comprueba.
-    if (!urlNueva) return Promise.resolve();
-    if (urlDe(nodo) === urlNueva) return Promise.resolve();
-    const posicion = Number.isFinite(medio.currentTime) ? medio.currentTime : 0;
-    ponerUrl(nodo, urlNueva, origen);
-    ponerPrecarga(medio, 'auto');
-    medio.load();
-    return esperarMetadatos(medio, 2500)
-      .then((ok) => {
-        if (ok || medio.readyState > 0 || urlDe(nodo) !== urlNueva || medio.error) return ok;
-        anotar('la fuente reordenada no arranca (red ' + medio.networkState + '): se vuelve a cargar');
-        medio.load();
-        return esperarMetadatos(medio, 4000);
-      })
-      .then(() => {
-        if (posicion <= 0) return;
-        try {
-          if (Number.isFinite(medio.duration))
-            medio.currentTime = Math.min(posicion, Math.max(0, medio.duration - 0.001));
-        } catch (e) { /* el medio cambió por debajo */ }
-      });
-  }
-
-  // ── Preparación anticipada ───────────────────────────────────────────────
-  // Hasta la 0.4.12 la fuente se cambiaba **después** del primer fallo: el
-  // motor rechazaba el blob, Wrusp lo veía y lo sustituía. Funcionaba, pero el
-  // reproductor enseñaba su error un instante antes de arreglarse, y con la
-  // barra de progreso el fallo llegaba con el vídeo ya en marcha, que es lo
-  // que se veía como salto o como cuelgue.
-  //
-  // Ahora la fuente se deja lista cuando el vídeo entra en pantalla, que es
-  // cuando puede pulsarse: al llegar el play ya es la buena y no hay nada que
-  // reparar. Solo lo visible y solo si hay hueco de copia, porque preparar el
-  // chat entero costaría cuatro tercios de cada fichero en memoria. Es la
-  // misma economía que en oxidezap (MIT), que decodifica el fotograma que va a
-  // dibujar en vez del vídeo entero.
-  function prepararPronto(medio, forzar) {
-    if (!medio || anticipados.has(medio) || estaEnObras(medio)) return;
-    const nodo = portador(medio);
-    if (!nodo) return;
-    const url = String(urlDe(nodo) || '');
+  // ¿Se retiene esta asignación? Solo un blob de vídeo nuestro, de un tamaño
+  // que quepa en una copia.
+  function retenible(url) {
     const entrada = candidatos.get(url);
-    if (!entrada || entrada.definitiva || fallidas.has(url)) return;
-    if (!llevaVideo(entrada) || entrada.blob.size > MAX_DATA) return;
-    // Sin `forzar`, solo un par por adelantado: entrar en un chat registra
-    // todos sus vídeos a la vez y leerlos todos cuelga la aplicación. Con
-    // `forzar` —el puntero encima, que es lo que precede a un clic— se
-    // prepara mientras quede cupo de copias.
-    if (!cabeOtraCopia(forzar ? MAX_COPIAS : MAX_ADELANTADAS)) return;
+    if (!entrada) return false;
+    return llevaVideo(entrada) && entrada.blob.size <= MAX_DATA;
+  }
 
-    anticipados.add(medio);
-    const enMarcha = !medio.paused;
-    entrarEnObras(medio);
-    // Se cuenta al pedirla, no al terminarla, y van de una en una: leer un
-    // vídeo entero y pasarlo a base64 es trabajo del hilo de la página, y en
-    // paralelo unos cuantos bastan para dejarla muerta.
-    adelantadas++;
-    colaAnticipada = colaAnticipada.then(() => preparar(url))
-      .then((definitiva) => {
-        // Sin copia, o la página cambió la fuente por debajo mientras tanto.
-        if (definitiva === url || String(urlDe(nodo) || '') !== url) return;
-        if (enMarcha || medio.currentTime > 0) {
-          // Estaba sonando: hay posición que conservar y hay que rearrancar.
-          return usar(medio, nodo, definitiva, url).then(() => {
-            if (medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
-          });
-        }
-        // En frío: se cambia la fuente sin arrancar nada. La precarga se deja
-        // como estaba, para que dejar listo un vídeo no sea cargarlo entero.
-        const precarga = precargaDe(medio);
-        ponerUrl(nodo, definitiva, url);
-        ponerPrecarga(medio, precarga);
-        try { medio.load(); } catch (e) { /* el medio ya no está */ }
+  // El elemento ya tiene reproductor y WhatsApp le da otro vídeo: un visor o
+  // un hueco de la lista que se recicla. La asignación lo iba a desmontar de
+  // todas formas, así que ese desmontaje —el único, el que WhatsApp ya
+  // provocaba— se hace aquí, sin fuente detrás, y el reproductor que venga
+  // después no tendrá nada que desmontar. Sin `src` y con `load()` el motor se
+  // queda vacío sin disparar `error`; con `src=""` lo dispararía y WhatsApp lo
+  // vería. Con <source> hijos, `load()` elegiría uno de ellos: eso no se toca.
+  function relevar(medio) {
+    if (!(medio instanceof HTMLMediaElement) || medio.querySelector('source[src]')) return false;
+    quitarAtributo.call(medio, 'src');
+    try { medio.load(); } catch (e) { /* el medio ya no está */ }
+    return true;
+  }
+
+  function retener(nodo, url) {
+    nodo.__wruspRetenida = url;
+    // Un GIF se reproduce solo y necesita su fuente ya. React pone la fuente y
+    // `autoplay` en la misma pasada y en cualquier orden, así que en la tarea
+    // siguiente ya se sabe cuál de los dos casos es. Si `autoplay` llega
+    // después, lo entrega su propio envoltorio.
+    setTimeout(() => {
+      const medio = medioDe(nodo);
+      if (retenidaDe(nodo) === url && medio && medio.autoplay) entregar(nodo, false);
+    }, 0);
+  }
+
+  // Entrega al nodo su fuente definitiva, una sola vez, y devuelve la promesa
+  // de que ya la tiene. `pedida`: alguien ha llamado a `play()`; si no, es un
+  // GIF, y uno que WhatsApp ya ha sacado del chat mientras esperaba turno no
+  // se lee (si vuelve, se le entregará entonces).
+  function entregar(nodo, pedida) {
+    const url = retenidaDe(nodo);
+    if (url === undefined) return Promise.resolve();
+    const previa = esperas.get(nodo);
+    if (previa && previa.url === url) return previa.promesa;
+    const promesa = cola = cola
+      .then(() => {
+        if (retenidaDe(nodo) !== url) return null;
+        const medio = medioDe(nodo);
+        if (!pedida && !(medio && medio.isConnected)) return null;
+        return conPlazo(preparar(url), PLAZO_PREPARAR, url);
       })
-      .catch(() => { /* al pulsar play se intenta otra vez */ })
-      .then(() => { adelantadas--; salirDeObras(medio); });
-  }
-
-  // ── Reparación, cuando la anticipación no llegó a tiempo ─────────────────
-
-  /// El nodo que lleva exactamente esta URL: el medio o un <source> suyo.
-  function portadorDe(medio, url) {
-    if (String(urlDe(medio) || '') === url) return medio;
-    for (const fuente of medio.querySelectorAll('source[src]'))
-      if (String(urlDe(fuente) || '') === url) return fuente;
-    return null;
-  }
-
-  /// Segundo intento cuando la copia no cambia nada: la misma URL del blob
-  /// con una acuñación nueva. Los vídeos volcados de un chat real se
-  /// reproducen tal cual en el banco, así que si el motor los rechaza sin leer
-  /// un byte, lo que falla es la resolución de esa URL, no el fichero.
-  function reacunar(medio, nodo, url, entrada, seguir, detalle) {
-    const nueva = crearUrl.call(URL, entrada.blob);
-    candidatos.set(nueva, {
-      blob: entrada.blob, copia: null, definitiva: nueva, trabajo: null,
-      motivo: entrada.motivo, reacunada: true,
-    });
-    return usar(medio, nodo, nueva, url).then(() => {
-      salirDeObras(medio);
-      anotar('blob reacuñado como URL nueva' + detalle + ': se reintenta');
-      if (seguir && medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
-    });
-  }
-
-  /// Intenta dejar reproducible el blob de un medio que acaba de fallar y lo
-  /// vuelve a arrancar; si no hay nada que cambiar, lo detiene.
-  function reparar(medio, nodo, url, entrada, seguir, detalle) {
-    entrarEnObras(medio);
-    // ¿Sigue el blob accesible desde la página? Si no, la URL fue revocada o
-    // el registro de blobs la perdió, y eso explica el «formato no admitido».
-    fetch(url).then((r) => r.blob()).then(
-      (b) => anotar('el blob sigue accesible por fetch (' + Math.round(b.size / 1024) + ' KiB)'),
-      (e) => anotar('el blob NO se deja leer por fetch: ' + ((e && e.message) || e)));
-    return preparar(url)
       .then((definitiva) => {
-        if (definitiva === url) {
-          if (!entrada.reacunada) return reacunar(medio, nodo, url, entrada, seguir, detalle);
-          salirDeObras(medio);
-          detener(medio, url, 'el blob no se puede reordenar (' + (entrada.motivo || '?') + ')' + detalle + ': pipeline detenido');
-          describirFallido(entrada);
-          return;
+        const espera = esperas.get(nodo);
+        if (espera && espera.url === url) esperas.delete(nodo);
+        // Sin turno, o la página la cambió o la quitó mientras tanto.
+        if (definitiva === null || retenidaDe(nodo) !== url) return;
+        soltarRetenida(nodo);
+        // Revocada sin copia: WhatsApp ya no quiere ese vídeo.
+        if (definitiva === url && !candidatos.has(url)) return;
+        ponerUrl(nodo, definitiva, definitiva !== url ? url : null);
+        // Un <source> no carga nada por sí solo: el medio elige fuente al
+        // cargar. Solo si nunca eligió ninguna ni ha fallado, que entonces no
+        // hay reproductor que destruir.
+        const medio = medioDe(nodo);
+        if (medio && medio !== nodo && !medio.error
+          && (medio.networkState === HTMLMediaElement.NETWORK_EMPTY
+            || medio.networkState === HTMLMediaElement.NETWORK_NO_SOURCE)) {
+          try { medio.load(); } catch (e) { /* el medio ya no está */ }
         }
-        anotar('medio con fallo' + detalle + ': se reordena y se reintenta');
-        return usar(medio, nodo, definitiva, url).then(() => {
-          salirDeObras(medio);
-          if (seguir && medio.isConnected) return reproducirNativo.call(medio).catch(() => {});
-        });
       })
-      .catch(() => salirDeObras(medio));
+      .catch(() => {});
+    esperas.set(nodo, { url, promesa });
+    return promesa;
+  }
+
+  // El medio y sus <source> que estén esperando su fuente.
+  function entregarTodas(medio, pedida) {
+    const pendientes = [];
+    if (retenidaDe(medio) !== undefined) pendientes.push(entregar(medio, pedida));
+    for (const fuente of medio.querySelectorAll('source'))
+      if (retenidaDe(fuente) !== undefined) pendientes.push(entregar(fuente, pedida));
+    return pendientes;
+  }
+
+  // ── Fallos: se anotan y no se tocan ──────────────────────────────────────
+  // Hasta la 0.4.14 un fallo se «reparaba»: se cambiaba la fuente por la copia,
+  // o por una URL nueva del mismo blob, o se quitaba para desmontar el
+  // pipeline. Todo eso destruye el reproductor en el hilo principal, y sobre
+  // uno que acaba de fallar es justo cuando esa destrucción se queda esperando
+  // un cerrojo de GStreamer: el cuelgue de más de dos minutos del 11-09-2026
+  // salió de ahí (ADR-043). Ahora el fallo se anota con todo el detalle, se
+  // describe el fichero y el elemento se deja como está. Con la fuente
+  // decidida antes, un fallo ya no es algo que Wrusp pueda arreglar después.
+
+  function describirFallido(entrada) {
+    if (!entrada || !entrada.blob || entrada.descrito) return;
+    entrada.descrito = true;
+    codecsDe(entrada.blob).then((codecs) => {
+      anotar('códecs del medio que falla: ' + codecs + ' (' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') + ')');
+    });
+    ofrecerVolcado(entrada.blob);
   }
 
   function vigilarFallo(medio) {
     if (vigilados.has(medio)) return;
     vigilados.add(medio);
     medio.addEventListener('error', () => {
-      // Mientras se prepara la fuente, el elemento aún lleva la vieja: un
-      // fallo aquí lo arregla el cambio que viene detrás.
-      if (estaEnObras(medio)) return;
       const codigo = medio.error ? medio.error.code : 0;
-      // `src=""`: WhatsApp deja así los vídeos que aún no ha descargado, y el
-      // motor, por especificación, falla con código 4 al resolver la cadena
-      // vacía a la propia página. No hay nada que reparar ni que sondear:
-      // el registro de la 0.4.8 mostró 71 de estos, cada uno con un sondeo
-      // que se traía 600 KiB de HTML.
+      // `src=""`: vídeos que WhatsApp aún no ha descargado. El registro de la
+      // 0.4.8 mostró 71 de estos.
       const atributo = medio.getAttribute('src');
       if (atributo !== null && atributo.trim() === '' && !medio.querySelector('source[src]')) {
         if (!sinFuenteAnotado) {
@@ -1050,50 +931,31 @@ pub fn fix_large_mp4_blobs_script() -> String {
         }
         return;
       }
-      const nodo = portador(medio);
-      const marca = nodo ? null : sustituido(medio);
-      const url = String(urlDe(nodo || (marca && marca.nodo) || medio) || '');
-      const entrada = nodo ? candidatos.get(url) : (marca && candidatos.get(marca.url));
-      // Desmontar el pipeline borra `error`, y sin este rastro no hay forma de
-      // saber después qué pasó (el banco lo lee de aquí).
+      const fuente = medio.querySelector('source[src]');
+      const url = String(urlDe(medio.getAttribute('src') !== null || !fuente ? medio : fuente) || '');
+      const origen = medio.__wruspOrigen || (fuente && fuente.__wruspOrigen) || '';
+      const entrada = candidatos.get(origen || url);
+      // El banco lee de aquí qué pasó.
       window.__wruspUltimoFallo = { codigo, url };
       let esquema = url.slice(0, url.indexOf(':') + 1) || 'sin src';
       if (esquema === 'https:' || esquema === 'http:') {
         try { const u = new URL(url); esquema = u.origin + u.pathname.slice(0, 48); } catch (e) { /* se queda el esquema */ }
       }
-      const elemento = (nodo === medio || !nodo ? 'src' : 'source') + (medio.autoplay ? ' autoplay' : '')
-        + ' preload=' + medio.preload + (medio.isConnected ? '' : ' desconectado')
-        + (medio.hasAttribute('crossorigin') ? ' crossorigin' : '');
-      const detalle = ' (' + elemento + ', código ' + codigo + ', red ' + medio.networkState + ', datos ' + medio.readyState
-        + ', ' + (!entrada ? 'sin blob candidato, ' + esquema : nodo ? 'blob candidato' : 'copia ya entregada')
+      const detalle = ' (' + (medio.autoplay ? 'autoplay, ' : '') + 'código ' + codigo
+        + ', red ' + medio.networkState + ', datos ' + medio.readyState + ', '
+        + (origen ? 'copia de Wrusp' : entrada ? 'blob sin copia' : 'fuente ajena, ' + esquema)
         + (entrada && entrada.blob ? ', ' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') : '')
-        + (entrada && entrada.motivo ? ', ' + entrada.motivo : '')
-        + ')';
-      if (codigo === 1 || codigo === 2) {
-        anotar('medio con aviso de transporte o red' + detalle);
-        return;
-      }
-      const seguir = medio.autoplay || !medio.paused;
-      // Candidato aún sin preparar: se intenta aquí mismo. Es el camino de los
-      // vídeos que fallan antes de que la preparación anticipada llegue.
-      if (nodo && entrada && !entrada.definitiva && !reparados.has(medio)) {
-        reparados.add(medio);
-        reparar(medio, nodo, url, entrada, seguir, detalle);
-        return;
-      }
-      // La copia entregada también ha fallado: ahora sí, se detiene y se
-      // describe el fichero (es el caso que hay que analizar a mano).
-      if (marca && entrada) {
-        detener(medio, url, 'la copia entregada también falla' + detalle + ': pipeline detenido');
+        + (entrada && entrada.motivo ? ', ' + entrada.motivo : '') + ')';
+      anotar('medio con fallo' + detalle + ': no se toca');
+      if (entrada) {
         describirFallido(entrada);
         return;
       }
-      // Fuente remota: se sondea el principio con una petición de rango, que
-      // es lo mismo que hace el motor, y se anota qué contesta y qué códecs
-      // trae. Si la sirve el service worker de WhatsApp, aquí se ve.
-      if (!entrada && /^https?:/.test(url) && url !== location.href && !reparados.has(medio)) {
-        reparados.add(medio);
-        detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
+      // Fuente remota: se sondea el principio con una petición de rango, como
+      // haría el motor, sin tocar el elemento. Si la sirve el service worker
+      // de WhatsApp, aquí se ve.
+      if (/^https?:/.test(url) && url !== location.href && !sondeados.has(medio)) {
+        sondeados.add(medio);
         fetch(url, { headers: { Range: 'bytes=0-262143' } }).then(async (r) => {
           const tipo = r.headers.get('content-type') || 'sin content-type';
           const rango = r.headers.get('content-range') || 'sin content-range';
@@ -1103,139 +965,32 @@ pub fn fix_large_mp4_blobs_script() -> String {
           anotar('sondeo de la fuente remota: HTTP ' + r.status + ', ' + tipo + ', ' + rango + ', ' + Math.round(blob.size / 1024) + ' KiB leídos, ' + (motivo || 'índice al final') + ', ' + codecs);
           ofrecerVolcado(blob);
         }).catch((e) => anotar('sondeo de la fuente remota: no se pudo leer (' + ((e && e.message) || e) + ')'));
-        return;
       }
-      // Un blob que no pasó por nuestro `createObjectURL` (WhatsApp descifra
-      // parte de los medios en workers, y allí no llegamos): se lee con
-      // `fetch` y entra por el mismo camino. Si la lectura falla, era una
-      // MediaSource u otra cosa, y no hay nada que hacer salvo detenerlo.
-      if (!entrada && url.indexOf('blob:') === 0 && !reparados.has(medio)) {
-        reparados.add(medio);
-        entrarEnObras(medio);
-        fetch(url).then((r) => r.blob()).then((blob) => {
-          const nueva = { blob, copia: null, definitiva: null, trabajo: null };
-          candidatos.set(url, nueva);
-          salirDeObras(medio);
-          const portadorReal = portadorDe(medio, url) || medio;
-          return reparar(medio, portadorReal, url, nueva, seguir,
-            detalle.replace('sin blob candidato, blob:', 'blob leído a posteriori, ' + Math.round(blob.size / 1024) + ' KiB ' + (blob.type || 'sin tipo')));
-        }).catch(() => {
-          salirDeObras(medio);
-          detener(medio, url, 'medio con fallo' + detalle + ', el blob no se deja leer (¿MediaSource?): pipeline detenido');
-        });
-        return;
-      }
-      detener(medio, url, 'medio con fallo de decodificación' + detalle + ': pipeline detenido');
-      if (entrada && entrada.blob) describirFallido(entrada);
     }, true);
-  }
-
-  // Tras detener: códecs al registro y, si está activado, volcado a disco.
-  function describirFallido(entrada) {
-    if (!entrada || !entrada.blob || entrada.descrito) return;
-    entrada.descrito = true;
-    codecsDe(entrada.blob).then((codecs) => {
-      anotar('códecs del medio detenido: ' + codecs + ' (' + Math.round(entrada.blob.size / 1024) + ' KiB ' + (entrada.blob.type || 'sin tipo') + ')');
-    });
-    ofrecerVolcado(entrada.blob);
   }
 
   // ── Registro de nodos ────────────────────────────────────────────────────
 
-  // Cualquier fuente remota o de blob, no solo los candidatos: el registro de
-  // la 0.4.7 enseñó que WhatsApp también pone vídeos con fuente `https:`
-  // (servidos por su service worker) y cada uno levantaba su pipeline nada
-  // más aparecer en el chat.
+  // Cualquier fuente remota o de blob, no solo los candidatos: WhatsApp también
+  // pone vídeos con fuente `https:` (servidos por su service worker).
   const conFuente = (valor) => /^(blob:|https?:)/.test(String(valor || ''));
-
-  // Antes de que la fuente llegue al elemento: si es una de las nuestras, se
-  // aplaza su precarga para que el motor no arranque nada todavía.
-  function prepararNodo(nodo, valor) {
-    if (!conFuente(valor)) return;
-    const medio = medioDe(nodo);
-    if (medio) aplazarPrecarga(medio);
-  }
-
-  // El puntero encima es lo que precede a un clic, y a diferencia del
-  // observador de intersección llega siempre. Es el disparador que de verdad
-  // sostiene la preparación anticipada de un chat largo: los primeros vídeos
-  // se preparan al registrarse y el resto, en cuanto el ratón se acerca.
-  function vigilarPuntero(medio) {
-    if (esperandoPuntero.has(medio)) return;
-    esperandoPuntero.add(medio);
-    const alAcercarse = () => prepararPronto(medio, true);
-    medio.addEventListener('pointerenter', alAcercarse);
-    medio.addEventListener('pointerdown', alAcercarse);
-    // WhatsApp tapa el vídeo con su propio botón de reproducir, así que el
-    // puntero puede no llegar nunca al <video>: se escucha también en el
-    // contenedor que lo envuelve.
-    const envoltorio = medio.parentElement;
-    if (envoltorio) {
-      envoltorio.addEventListener('pointerenter', alAcercarse);
-      envoltorio.addEventListener('pointerdown', alAcercarse);
-    }
-  }
 
   function registrar(nodo) {
     const medio = medioDe(nodo);
     if (!medio) return;
     vigilarFallo(medio);
     vigilarVisibilidad(medio);
-    vigilarPuntero(medio);
     if (conFuente(urlDe(nodo))) aplazarPrecarga(medio);
-    // Un par por adelantado, y el resto cuando alguien se acerque. Con
-    // `preload="none"` el motor no descarga datos, pero sí resuelve la fuente
-    // al recibirla: si la URL del blob no le sirve, marca «sin fuente» y
-    // dispara el error antes de que nadie pulse nada, así que esperar a un
-    // gesto llega tarde y merece la pena adelantar unos pocos. A los demás
-    // les llega su turno con el puntero encima o, en el peor caso, al pulsar,
-    // y entonces `vigilarFallo` repara como hacía la 0.4.12.
-    prepararPronto(medio);
   }
 
   HTMLMediaElement.prototype.play = function () {
     const medio = this;
     vigilarFallo(medio);
-    const nodo = portador(medio);
-    if (!nodo) {
-      if (fallidas.has(String(urlDe(medio) || '')))
-        return Promise.reject(new DOMException('medio descartado tras fallar', 'AbortError'));
-      ponerPrecarga(medio, 'auto');
-      return reproducirNativo.call(medio);
-    }
-    // Con un blob candidato la precarga se devuelve en `usar`, ya con la
-    // fuente definitiva puesta: arrancar aquí la carga del original para
-    // abortarla enseguida es lo que dejaba la fuente nueva atascada.
-    const url = String(urlDe(nodo));
-    entrarEnObras(medio);
-    return preparar(url)
-      .then((definitiva) => usar(medio, nodo, definitiva, url))
-      .then(() => { salirDeObras(medio); return reproducirNativo.call(medio); })
-      .catch((e) => { salirDeObras(medio); throw e; });
+    ponerPrecarga(medio, 'auto');
+    const pendientes = entregarTodas(medio, true);
+    if (!pendientes.length) return reproducirNativo.call(medio);
+    return Promise.all(pendientes).then(() => reproducirNativo.call(medio));
   };
-
-  // Un `autoplay` no pasa por `play()`: el motor arranca solo. Se detiene, se
-  // prepara la fuente y se vuelve a arrancar.
-  document.addEventListener('play', function (evento) {
-    const medio = evento.target;
-    if (!(medio instanceof HTMLMediaElement)) return;
-    const nodo = portador(medio);
-    if (!nodo) return;
-    const url = String(urlDe(nodo));
-    const entrada = candidatos.get(url);
-    // Ya preparado (con copia o sin nada que cambiar): no se toca. Ver
-    // `preparar` para el bucle de pausa y reproducción que había aquí.
-    if (!entrada || entrada.definitiva) return;
-    medio.pause();
-    entrarEnObras(medio);
-    preparar(url)
-      .then((definitiva) => usar(medio, nodo, definitiva, url))
-      .then(() => {
-        salirDeObras(medio);
-        if (medio.isConnected) reproducirNativo.call(medio).catch(() => {});
-      })
-      .catch(() => salirDeObras(medio));
-  }, true);
 
   URL.createObjectURL = function (objeto) {
     const url = crearUrl.call(this, objeto);
@@ -1248,18 +1003,33 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   URL.revokeObjectURL = function (url) {
     const clave = String(url);
-    const entrada = candidatos.get(clave);
-    if (entrada) {
-      // La copia solo la conoce Wrusp: si nadie revoca la original, nadie la
-      // revocaría nunca.
+    if (candidatos.has(clave)) {
       soltarCopia(clave);
       const i = conCopia.indexOf(clave);
       if (i >= 0) conCopia.splice(i, 1);
       candidatos.delete(clave);
-      fallidas.delete(clave);
     }
     return revocarUrl.call(this, url);
   };
+
+  // Una asignación de fuente, por la propiedad o por el atributo. Devuelve si
+  // Wrusp se ha hecho cargo; si no, pasa al motor tal cual.
+  function asignar(nodo, valor) {
+    const url = String(valor || '');
+    // La misma fuente que ya lleva, en su versión `data:`: volver a asignarla
+    // recargaría, o sea, destruiría el reproductor para nada.
+    if (url && nodo.__wruspOrigen === url && tieneFuenteReal(nodo)) return true;
+    soltarRetenida(nodo);
+    olvidarMarca(nodo);
+    const medio = medioDe(nodo);
+    // Antes de que la fuente llegue: asignarla arranca la carga en el acto, y
+    // aplazar la precarga después ya no la cancela.
+    if (medio && conFuente(url)) aplazarPrecarga(medio);
+    if (!retenible(url)) return false;
+    if (tieneFuenteReal(nodo) && !relevar(nodo)) return false;
+    retener(nodo, url);
+    return true;
+  }
 
   // Tres vías para poner la fuente, y hay que estar en las tres: el hueco de
   // `setAttribute` dejaba pasar vídeos sin aplazar su precarga.
@@ -1268,15 +1038,13 @@ pub fn fix_large_mp4_blobs_script() -> String {
     Object.defineProperty(prototipo, 'src', {
       configurable: descriptor.configurable,
       enumerable: descriptor.enumerable,
-      get: descriptor.get,
+      // La página ve la fuente que puso, aunque el motor aún no la tenga.
+      get() {
+        const retenida = retenidaDe(this);
+        return retenida !== undefined ? retenida : descriptor.get.call(this);
+      },
       set(valor) {
-        // El orden importa: asignar la fuente arranca la carga en el acto, y
-        // aplazar la precarga después ya no la cancela.
-        prepararNodo(this, valor);
-        // La página pone su propia fuente: de qué blob salió la anterior deja
-        // de ser cierto.
-        olvidarMarca(this);
-        descriptor.set.call(this, valor);
+        if (!asignar(this, valor)) descriptor.set.call(this, valor);
         registrar(this);
       },
     });
@@ -1284,19 +1052,41 @@ pub fn fix_large_mp4_blobs_script() -> String {
   envolverSrc(HTMLMediaElement.prototype, descriptorMedio);
   envolverSrc(HTMLSourceElement.prototype, descriptorFuente);
 
+  // `autoplay` puesto después de la fuente: el GIF necesita la suya ya.
+  if (descriptorAutoplay && descriptorAutoplay.get && descriptorAutoplay.set && descriptorAutoplay.configurable) {
+    Object.defineProperty(HTMLMediaElement.prototype, 'autoplay', {
+      configurable: true,
+      enumerable: descriptorAutoplay.enumerable,
+      get: descriptorAutoplay.get,
+      set(valor) {
+        descriptorAutoplay.set.call(this, valor);
+        if (valor) entregarTodas(this, false);
+      },
+    });
+  }
+
+  const esNodoDeMedio = (nodo) => nodo instanceof HTMLMediaElement || nodo instanceof HTMLSourceElement;
+
   Element.prototype.setAttribute = function (nombre, valor) {
-    const esFuente = String(nombre).toLowerCase() === 'src'
-      && (this instanceof HTMLMediaElement || this instanceof HTMLSourceElement);
-    if (esFuente) {
-      prepararNodo(this, valor);
-      olvidarMarca(this);
+    const clave = String(nombre).toLowerCase();
+    if (clave === 'src' && esNodoDeMedio(this)) {
+      if (!asignar(this, valor)) ponerAtributo.call(this, nombre, valor);
+      registrar(this);
+      return;
     }
     ponerAtributo.call(this, nombre, valor);
-    if (esFuente) registrar(this);
+    if (clave === 'autoplay' && this instanceof HTMLMediaElement) entregarTodas(this, false);
   };
 
-  // Y los que llegan al documento con la fuente ya puesta; los que se van,
-  // se dejan de vigilar.
+  // Quitar la fuente de un nodo que la tenía retenida: ya no se le entrega.
+  Element.prototype.removeAttribute = function (nombre) {
+    if (String(nombre).toLowerCase() === 'src' && esNodoDeMedio(this)) soltarRetenida(this);
+    return quitarAtributo.call(this, nombre);
+  };
+
+  // Los que llegan al documento con la fuente ya puesta (el analizador de HTML
+  // no pasa por `setAttribute`): esos no se pueden retener, solo vigilar. Los
+  // que se van, se dejan de observar.
   function registrarArbol(raiz) {
     if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
     if (raiz.matches('video[src], audio[src], source[src]')) registrar(raiz);

@@ -4,6 +4,33 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.15] — 2026-09-11
+
+### Corregido
+
+- **La aplicación ya no se congela al reproducir vídeos y GIF.** Se cazó un cuelgue en uso real, con WhatsApp parado más de dos minutos, y el volcado del proceso dice qué pasaba. Cuando un vídeo fallaba, Wrusp le cambiaba la fuente para arreglarlo. Ese cambio obliga al motor a desmontar el reproductor en el hilo principal, y con un reproductor recién fallado el desmontaje se quedaba esperando a un hilo de GStreamer que, a su vez, lo esperaba a él. Ahora la fuente de cada vídeo se decide antes y se entrega **una sola vez**: Wrusp guarda el vídeo que pone WhatsApp y se lo da al reproductor ya preparado cuando lo pulsas, o nada más aparecer si es un GIF. Wrusp ya no cambia la fuente de un vídeo que tiene reproductor.
+- **Menos carga al entrar en un chat.** Los vídeos que no se reproducen ya no abren reproductor, ni conexión al bus del sistema, ni copia en memoria. En el banco de 24 adjuntos se hace una lectura en vez de cinco.
+- **Volver a asignar el mismo vídeo ya no lo reinicia.** Cuando WhatsApp repintaba un vídeo en marcha, el vídeo volvía al principio.
+- **El icono de la bandeja se decodifica una vez**, no en cada cambio del contador de mensajes.
+
+### Retirado
+
+- La preparación anticipada de la 0.4.13 y la reparación tras un fallo, incluidos el reintento con una URL nueva y la detención del pipeline. Las tres cambiaban la fuente de un reproductor vivo. Un vídeo que falla se anota en el registro con sus códecs y se deja como está.
+
+### Añadido
+
+- **Bancos nuevos:**
+  - `banco_rendimiento`, que mide el coste de cada script inyectado.
+  - `banco_memoria`, con un freno.
+  - `banco_mpris`, que mide las conexiones al bus por vídeo.
+- **Maquetas nuevas en `banco_faststart`:**
+  - El coste de cambiar la fuente de un vídeo que suena.
+  - Un GIF que recibe su fuente una sola vez.
+  - La fuente retenida hasta el clic.
+- **Mejoras en `banco_faststart`:**
+  - Un freno que para el banco si crecen los descriptores del bus de sesión.
+  - `WRUSP_BANCO_BROWSER`, para correr las maquetas contra otra versión del script.
+
 ## [0.4.14] — 2026-09-09
 
 ### Corregido

@@ -27,15 +27,31 @@ fn load(app: &AppHandle, name: &str) -> Option<Image<'static>> {
     Image::from_bytes(&bytes).ok().map(|img| img.to_owned())
 }
 
+/// El icono base ya decodificado, con el nombre del que salió.
+///
+/// `apply` corre en el hilo de GTK cada vez que cambia el contador de no
+/// leídos —cientos de veces por sesión según el registro— y hasta ahora cada
+/// vez leía el PNG del disco y lo decodificaba entero antes de pintarle la
+/// insignia. En un equipo que ya está paginando, una lectura de disco en el
+/// hilo que dibuja la ventana es justo lo que la deja sin responder.
+static BASE: Mutex<Option<(String, Image<'static>)>> = Mutex::new(None);
+
 /// Icono configurado, con degradación al de por defecto del bundle.
 pub fn current(app: &AppHandle) -> Option<Image<'static>> {
     let name = app.state::<ConfigState>().0.lock().unwrap().icon.clone();
-    load(app, &name)
+    if let Some((cached, image)) = BASE.lock().unwrap().as_ref() {
+        if *cached == name {
+            return Some(image.clone());
+        }
+    }
+    let image = load(app, &name)
         .or_else(|| load(app, DEFAULT_ICON))
         .or_else(|| {
             app.default_window_icon()
                 .map(|icon| icon.clone().to_owned())
-        })
+        })?;
+    *BASE.lock().unwrap() = Some((name, image.clone()));
+    Some(image)
 }
 
 use std::sync::Mutex;
