@@ -1,20 +1,29 @@
-//! Banco de la comprobación de actualizaciones.
+//! Banco de la página de ajustes: se carga entera y se usa como la usaría una
+//! persona.
 //!
-//! Desde la 0.4.17 la comprobación **pregunta** antes de descargar nada, y
-//! ofrece el paquete que le sirve a este sistema de los nueve que publica cada
-//! versión. Eso son tres cosas que pueden salir mal en silencio: que no se
-//! pregunte y se abra algo sin permiso, que se ofrezca el paquete de otra
-//! distribución o de otra arquitectura, y que «estás al día» no se distinga de
-//! «hay una versión nueva».
+//! Nació en la 0.4.17 para la comprobación de actualizaciones
+//! (`banco_actualizacion`) y cubre desde la 0.4.18 todo lo que la página hace
+//! sin ayuda de nadie: preguntar antes de descargar una versión, el visor del
+//! registro, el informe de diagnóstico y los avisos de que algo se ha
+//! guardado.
 //!
-//! El banco carga la página de ajustes **de verdad** (`ui/index.html`,
-//! `ui/main.js` y `ui/style.css`, empotrados aquí para que no haya copias que
-//! envejezcan), con dos postizos: el puente con Rust, que apunta lo que se le
-//! pide, y `fetch`, que responde con una versión publicada real de GitHub. No
-//! toca la red ni crea ningún `<video>`. Necesita sesión gráfica:
+//! Lo que comprueba de verdad no es solo que cada cosa funcione, sino tres
+//! costumbres que se rompen en silencio:
+//!
+//! - que comprobar actualizaciones **no descargue nada** sin que lo pidan;
+//! - que el paquete que se ofrece sea el de esta distribución y arquitectura;
+//! - que el arranque de la página, que es una cadena de `await`, **llegue
+//!   hasta el final**: un eslabón que reviente deja muertas las secciones
+//!   siguientes sin un solo aviso (pasó con el selector de iconos, ADR-045).
+//!
+//! Carga `ui/index.html`, `ui/main.js` y `ui/style.css` de verdad, empotrados
+//! aquí para que no haya copias que envejezcan, con dos postizos: el puente
+//! con Rust, que apunta lo que se le pide, y `fetch`, que responde con una
+//! versión publicada real de GitHub. No toca la red ni crea ningún `<video>`.
+//! Necesita sesión gráfica:
 //!
 //! ```sh
-//! cargo run --example banco_actualizacion
+//! cargo run --example banco_ajustes
 //! ```
 
 use gtk::prelude::*;
@@ -60,17 +69,23 @@ struct Caso {
     sufijo: &'static str,
     arch: &'static str,
     espera_descarga: Option<&'static str>,
+    /// Si además se ejercita el resto de la página (diagnóstico, registro,
+    /// avisos). Con uno basta: lo demás es la misma página.
+    fase_ajustes: bool,
 }
 
 const CASOS: &[Caso] = &[
     Caso {
-        nombre: "Fedora x86_64 con una versión vieja: pregunta y ofrece el .rpm",
+        nombre: "Fedora x86_64 con una versión vieja, y la página de ajustes entera",
         version: "0.4.15",
         sufijo: ".rpm",
         arch: "x86_64",
         espera_descarga: Some(
             "https://github.com/Aleixenandros/Wrusp/releases/download/v0.4.16/Wrusp-0.4.16-1.x86_64.rpm",
         ),
+        // Este es además el que recorre el resto de la página: diagnóstico,
+        // registro y avisos. Los demás miran solo la comprobación de versión.
+        fase_ajustes: true,
     },
     Caso {
         nombre: "Debian x86_64: el mismo aviso ofrece el .deb",
@@ -80,6 +95,7 @@ const CASOS: &[Caso] = &[
         espera_descarga: Some(
             "https://github.com/Aleixenandros/Wrusp/releases/download/v0.4.16/Wrusp_0.4.16_amd64.deb",
         ),
+        fase_ajustes: false,
     },
     Caso {
         nombre: "Arch x86_64: ofrece el paquete de pacman",
@@ -89,6 +105,7 @@ const CASOS: &[Caso] = &[
         espera_descarga: Some(
             "https://github.com/Aleixenandros/Wrusp/releases/download/v0.4.16/Wrusp-0.4.16-1-x86_64.pkg.tar.zst",
         ),
+        fase_ajustes: false,
     },
     // El caso que justifica la comprobación de arquitectura: en un Fedora de
     // ARM el único `.rpm` publicado es de x86_64. Ofrecerlo sería peor que no
@@ -99,6 +116,7 @@ const CASOS: &[Caso] = &[
         sufijo: ".rpm",
         arch: "aarch64",
         espera_descarga: Some("https://github.com/Aleixenandros/Wrusp/releases"),
+        fase_ajustes: false,
     },
     Caso {
         nombre: "Ya estamos en la última: ni pregunta ni abre nada",
@@ -106,6 +124,7 @@ const CASOS: &[Caso] = &[
         sufijo: ".rpm",
         arch: "x86_64",
         espera_descarga: None,
+        fase_ajustes: false,
     },
     Caso {
         nombre: "Una versión más nueva que la publicada tampoco pregunta",
@@ -113,6 +132,7 @@ const CASOS: &[Caso] = &[
         sufijo: ".rpm",
         arch: "x86_64",
         espera_descarga: None,
+        fase_ajustes: false,
     },
 ];
 
@@ -148,12 +168,31 @@ window.__TAURI__ = {{
             downloadDir: '', downloadDefault: '/tmp', tempDir: '', tempDefault: '/tmp',
             logDir: '', logDefault: '/tmp',
           }});
-        case 'get_diagnostics': return Promise.resolve({{}});
+        case 'get_diagnostics':
+          return Promise.resolve({{
+            webkitVersion: 'WebKitGTK 2.52.5', hasH264Decoder: true,
+            h264DecoderName: 'avdec_h264', hasAacDecoder: true,
+            gstreamerCacheSize: 1048576, profilesSize: 314572800, logSize: 5242880,
+            osInfo: 'linux x86_64',
+          }});
+        case 'get_log_tail':
+          // Tres líneas que caen en filtros distintos, y uno de los textos
+          // lleva marcado: el visor no debe interpretarlo.
+          return Promise.resolve([
+            'wrusp: página: vídeo entregado como data: (900 KiB)',
+            'CONSOLE NETWORK ERROR WebSocket connection failed',
+            'wrusp: <b>notificación</b> enviada al escritorio (id 7)',
+          ].join('\n'));
+        case 'diagnostic_report':
+          return Promise.resolve('### Diagnóstico de Wrusp\n\n- **Wrusp:** 0.4.18\n');
+        case 'copy_text': return Promise.resolve(null);
         default: return Promise.resolve(null);
       }}
     }},
   }},
 }};
+
+window.__wruspFaseAjustes = {fase_ajustes};
 
 // La versión publicada, sin salir a la red. Cualquier otra dirección es un
 // fallo: la página no debería pedir nada más.
@@ -173,6 +212,7 @@ window.fetch = (url, opciones) => {{
         version = caso.version,
         sufijo = caso.sufijo,
         arch = caso.arch,
+        fase_ajustes = caso.fase_ajustes,
         release = RELEASE,
     );
 
@@ -181,7 +221,16 @@ window.fetch = (url, opciones) => {{
         r#"
 // ── Lo que se comprueba ──────────────────────────────────────────────────
 const informe = (pruebas, nota) => {{
-  const linea = pruebas.map(([q, ok]) => (ok ? 'OK' : 'FALLO') + ' ' + q).join(' | ');
+  let partes = pruebas.map(([q, ok]) => (ok ? 'OK' : 'FALLO') + ' ' + q);
+  // El título del documento es el canal con Rust y tiene su tope: con muchas
+  // comprobaciones se cortaba por la mitad y la última salía a medias. Si no
+  // cabe todo, se cuentan las que van bien y se detallan las que no.
+  if (partes.join(' | ').length > 700) {{
+    const fallos = pruebas.filter(([, ok]) => !ok);
+    partes = [`OK ${{pruebas.length - fallos.length}} comprobaciones`]
+      .concat(fallos.map(([q]) => 'FALLO ' + q));
+  }}
+  const linea = partes.join(' | ');
   document.title = 'WRUSP:' + (pruebas.every(([, ok]) => ok) ? 'TODO BIEN' : 'HAY FALLOS')
     + ' :: ' + linea + (nota ? ' | ' + nota : '');
 }};
@@ -196,6 +245,72 @@ const visible = (id) => {{
 
 const ESPERADA = '{esperada}';
 const HAY_VERSION = ESPERADA !== '';
+
+// Segunda fase: lo que la página de ajustes hace por su cuenta. Solo se
+// ejercita en un caso; los demás miran la comprobación de versiones.
+function faseAjustes(pruebas, estado, urls) {{
+  const pedidas = () => window.__wruspPedido.map((p) => p.orden);
+  // Que la cadena de arranque llegó al final: `refresh()` es lo último, y
+  // pide las cuentas. Si un eslabón revienta, esto no está (ADR-045).
+  pruebas.push(['el arranque de la página llega hasta el final', pedidas().includes('list_accounts')]);
+
+  // Los interruptores son interruptores, no casillas del navegador. Hay que
+  // abrir su panel: lo que está oculto no tiene medidas que mirar.
+  document.querySelector('.nav button[data-panel=\"comportamiento\"]').click();
+  const casilla = document.querySelector('.toggle input[type=\"checkbox\"]');
+  const ancho = casilla ? Math.round(casilla.getBoundingClientRect().width) : 0;
+  pruebas.push(['los ajustes usan interruptores deslizantes', ancho >= 36]);
+  pruebas.push([
+    'y el del corrector ortográfico está entre ellos',
+    !!document.querySelector('.toggle input[data-toggle=\"spellCheck\"]'),
+  ]);
+
+  document.querySelector('.nav button[data-panel=\"diagnostico\"]').click();
+  document.getElementById('copy-report').click();
+  setTimeout(() => {{
+    const copiados = window.__wruspPedido.filter((p) => p.orden === 'copy_text');
+    pruebas.push(['el informe de diagnóstico se copia', copiados.length === 1]);
+    pruebas.push([
+      'y es el informe, no otra cosa',
+      copiados.length === 1 && copiados[0].args.text.includes('Diagnóstico de Wrusp'),
+    ]);
+    pruebas.push(['una acción que sale bien lo dice', document.querySelectorAll('.toast').length >= 1]);
+
+    // El registro se lee al desplegarlo, no antes.
+    pruebas.push(['el registro no se lee hasta que se abre el visor', !pedidas().includes('get_log_tail')]);
+    document.getElementById('log-viewer').open = true;
+    document.getElementById('log-viewer').dispatchEvent(new Event('toggle'));
+    setTimeout(() => {{
+      const lineas = document.getElementById('log-lines');
+      pruebas.push(['al abrirlo, se lee', pedidas().includes('get_log_tail')]);
+      pruebas.push(['y se ven sus líneas', lineas.textContent.includes('vídeo entregado')]);
+      // El registro trae texto de fuera: se enseña, no se interpreta.
+      pruebas.push([
+        'el registro se enseña como texto, no como marcado',
+        lineas.querySelector('b') === null && lineas.textContent.includes('<b>'),
+      ]);
+
+      document.getElementById('log-filter').value = 'red';
+      document.getElementById('log-filter').dispatchEvent(new Event('change'));
+      const trasFiltro = lineas.textContent;
+      pruebas.push([
+        'el filtro deja solo lo suyo',
+        trasFiltro.includes('WebSocket') && !trasFiltro.includes('vídeo entregado'),
+      ]);
+
+      document.getElementById('log-filter').value = 'todo';
+      document.getElementById('log-filter').dispatchEvent(new Event('change'));
+      document.getElementById('log-search').value = 'notificación';
+      document.getElementById('log-search').dispatchEvent(new Event('input'));
+      pruebas.push([
+        'y la búsqueda también',
+        lineas.textContent.includes('notificación') && !lineas.textContent.includes('WebSocket'),
+      ]);
+
+      informe(pruebas, 'estado: ' + estado.trim() + ' · pedida: ' + (urls[0] || '(ninguna)'));
+    }}, 200);
+  }}, 200);
+}}
 
 setTimeout(() => {{
   // Como lo hace una persona: primero se abre «Acerca de». Sin esto el panel
@@ -246,7 +361,11 @@ setTimeout(() => {{
       // «Ahora no» tiene que cerrar el aviso, se haya pulsado o no Descargar.
       document.getElementById('update-later').click();
       pruebas.push(['«Ahora no» cierra el aviso', !visible('update-prompt')]);
-      informe(pruebas, 'estado: ' + estado.trim() + ' · pedida: ' + (urls[0] || '(ninguna)'));
+      if (!window.__wruspFaseAjustes) {{
+        informe(pruebas, 'estado: ' + estado.trim() + ' · pedida: ' + (urls[0] || '(ninguna)'));
+        return;
+      }}
+      faseAjustes(pruebas, estado, urls);
     }}, 250);
   }}, 400);
 }}, 200);

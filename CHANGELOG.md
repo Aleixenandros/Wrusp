@@ -4,6 +4,31 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.18] — 2026-09-20
+
+### Añadido
+
+- **Wrusp recuerda dónde y cómo dejaste la ventana.** Vuelve a abrirse con el tamaño y la posición de la última vez, y maximizada si así la dejaste. Si la pantalla donde estaba ya no está conectada, no se abre fuera de la vista: conserva el tamaño y deja que el sistema la coloque. En Wayland la posición la decide el escritorio, así que ahí solo se recuerda el tamaño.
+- **Corrector ortográfico al escribir en WhatsApp**, con los diccionarios del sistema en los idiomas de tu escritorio. Viene puesto y se puede apagar en Ajustes → Comportamiento.
+- **El registro se puede leer desde la propia aplicación**, en Ajustes → Diagnóstico, con búsqueda, filtros (Wrusp, vídeo y medios, red, errores) y un botón para copiarlo. Ya no hace falta abrir la carpeta y buscar el fichero en un editor.
+- **Botón «Copiar informe de diagnóstico»**, que deja listo para pegar en una incidencia lo que siempre se acaba preguntando: versión, sistema, motor, códecs de vídeo y audio, tamaños en disco y variables multimedia. No incluye nombres de cuentas, identificadores ni mensajes, y las rutas personales salen como `~`.
+- **Los ajustes avisan de lo que hacen.** Guardar una carpeta, cambiar el tema o el icono y limpiar la caché lo confirman con un aviso; antes solo se veía texto cuando algo fallaba. Y un ajuste que no se pueda guardar vuelve a su sitio en vez de enseñar un estado que no es el de verdad.
+
+### Corregido
+
+- **Una instalación nueva arrancaba con los ajustes cambiados.** Sin `config.json` que leer, Wrusp no usaba los valores por defecto que documenta: empezaba sin notificaciones, sin icono elegido y cerrándose al cerrar la ventana en vez de quedarse en la bandeja. Afectaba a la primera ejecución y a cualquiera a la que se le hubiera apartado el fichero por ilegible.
+- **La comprobación de actualizaciones ya no confunde una versión de prueba con la definitiva.** Comparaba tres números sueltos, así que una `0.5.0-rc.1` empataba con la `0.5.0` y se podía ofrecer una candidata como si fuera la final.
+
+### Seguridad
+
+- **La página de ajustes no puede salir de su propio origen.** Es la única vista con acceso a las órdenes internas de Wrusp, y admitía cualquier navegación: un enlace que la llevara a un sitio remoto la habría convertido en un navegador con ese acceso. Ahora aprende su origen en la primera carga y rechaza el resto; un enlace del proyecto se abre fuera, como en los chats.
+- **Abrir enlaces desde ajustes comprueba la dirección entera, no su principio.** La comprobación anterior daba por buenas direcciones que solo empezaban igual, como otro repositorio de nombre parecido o un dominio que continuara el del proyecto. Por ahí pasan las descargas que ofrece la comprobación de actualizaciones.
+
+### Mantenimiento
+
+- **Interruptores deslizantes** en Ajustes, en lugar de las casillas del navegador, con foco visible para el teclado y sin animación si el sistema pide no animar. Cambio de panel con una transición corta en vez de un salto seco.
+- **`banco_actualizacion` pasa a llamarse `banco_ajustes`** y recorre ahora la página de ajustes entera: la pregunta al actualizar, el visor del registro, el informe, los avisos y que el arranque de la página llegue hasta el final. Son 24 comprobaciones y cantan con la interfaz de la versión anterior.
+
 ## [0.4.17] — 2026-09-20
 
 ### Añadido

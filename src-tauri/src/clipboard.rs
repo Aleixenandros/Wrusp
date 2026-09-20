@@ -107,6 +107,31 @@ pub(crate) fn desde_base64(texto: &str) -> Option<Vec<u8>> {
 }
 
 /// Deja los bytes de una imagen en el portapapeles del escritorio.
+/// Copia texto al portapapeles del escritorio.
+///
+/// Lo pide la página de ajustes para el informe de diagnóstico.
+/// `navigator.clipboard` no vale aquí: WebKitGTK solo lo expone en contexto
+/// seguro y con el permiso concedido, y el informe se copia de una vista
+/// local. Por el mismo camino que las imágenes del chat, que ya funciona.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn copy_text(text: String) -> Result<(), String> {
+    if text.len() > 256 * 1024 {
+        return Err("Texto demasiado largo para el portapapeles".into());
+    }
+    let pantalla = gtk::gdk::Display::default().ok_or("No hay pantalla")?;
+    let papeles = gtk::Clipboard::default(&pantalla).ok_or("No hay portapapeles")?;
+    papeles.set_text(&text);
+    papeles.store();
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn copy_text(_text: String) -> Result<(), String> {
+    Err("Copiar al portapapeles solo está implementado en Linux".into())
+}
+
 #[cfg(target_os = "linux")]
 fn al_portapapeles(bytes: &[u8]) {
     use gtk::gdk_pixbuf::PixbufLoader;

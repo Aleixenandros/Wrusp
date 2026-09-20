@@ -402,11 +402,58 @@ button.primary:hover {
   cursor: default;
 }
 
+/* Interruptor deslizante, como los de los ajustes del escritorio. La casilla
+   sigue ahí (teclado, lectores de pantalla, `input.checked` en el guion):
+   solo se le quita la pintura del navegador y se dibuja encima. */
 .toggle input {
-  accent-color: var(--accent);
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.toggle input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
   width: 16px;
   height: 16px;
-  cursor: pointer;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toggle input:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle input:checked::after {
+  transform: translateX(18px);
+}
+
+/* El foco tiene que verse: al no ser ya una casilla del navegador, su anillo
+   por defecto no aparece. */
+.toggle input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle input,
+  .toggle input::after {
+    transition: none;
+  }
 }
 
 .keys {
@@ -813,5 +860,135 @@ kbd {
 
   .panels {
     width: 100%;
+  }
+}
+
+/* ── Avisos flotantes ──────────────────────────────────── */
+/* Abajo a la derecha, por encima de todo y sin robar el foco ni el ratón. */
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.toast {
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: none;
+}
+
+.toast.ok {
+  border-color: var(--accent);
+}
+
+.toast.error {
+  border-color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    transition: none;
+  }
+}
+
+/* ── Visor del registro ────────────────────────────────── */
+.log-viewer {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.log-viewer summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.log-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.log-controls input[type="search"] {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.log-controls button,
+.log-controls select {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.log-controls button:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* Monoespaciada y con barra propia: son líneas largas de GStreamer y de la
+   consola de la página, y envolverlas las vuelve ilegibles. */
+.log-lines {
+  margin-top: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--text-dim);
+}
+
+/* ── Cambio de panel ───────────────────────────────────── */
+/* Un desvanecido corto: el salto seco hacía dudar de si había cambiado algo. */
+.panel:not([hidden]) {
+  animation: panel-entra 0.15s ease-out;
+}
+
+@keyframes panel-entra {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel:not([hidden]) {
+    animation: none;
   }
 }

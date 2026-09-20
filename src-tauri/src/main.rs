@@ -166,6 +166,9 @@ fn main() {
             config::open_external,
             config::get_diagnostics,
             config::clear_gstreamer_cache,
+            config::get_log_tail,
+            config::diagnostic_report,
+            clipboard::copy_text,
         ])
         .setup(|app| {
             config::debug_assert_identifier(app.handle());
@@ -214,7 +217,13 @@ fn main() {
             }
             // En Windows y macOS los webviews hijos tienen dimensiones propias
             // que hay que refrescar (en Linux el vbox ya reparte el espacio).
-            WindowEvent::Resized(_) => shell::sync_bounds(window.app_handle()),
+            WindowEvent::Resized(_) => {
+                shell::sync_bounds(window.app_handle());
+                shell::note_geometry(window);
+            }
+            // Mover no cambia el reparto del espacio, pero sí dónde se abrirá
+            // la próxima vez.
+            WindowEvent::Moved(_) => shell::note_geometry(window),
             _ => {}
         })
         .build(tauri::generate_context!())

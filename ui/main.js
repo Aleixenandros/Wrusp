@@ -3,6 +3,29 @@
 
 const { invoke } = window.__TAURI__.core;
 
+// ── Avisos flotantes ────────────────────────────────────
+// Hasta ahora, guardar una carpeta o cambiar el tema no decía nada: solo se
+// veía texto cuando algo fallaba, así que no había forma de distinguir «hecho»
+// de «no ha pasado nada».
+const TOAST_MS = 2600;
+
+function aviso(texto, tipo = "ok") {
+  const zona = document.getElementById("toasts");
+  if (!zona) return;
+  const nodo = document.createElement("div");
+  nodo.className = `toast ${tipo}`;
+  nodo.textContent = texto;
+  zona.appendChild(nodo);
+  // Dos marcos para que la transición de entrada tenga de dónde salir.
+  requestAnimationFrame(() => requestAnimationFrame(() => nodo.classList.add("visible")));
+  setTimeout(() => {
+    nodo.classList.remove("visible");
+    // Se quita al acabar la transición, y también si no la hubo.
+    nodo.addEventListener("transitionend", () => nodo.remove(), { once: true });
+    setTimeout(() => nodo.remove(), 400);
+  }, TOAST_MS);
+}
+
 const listEl = document.getElementById("account-list");
 const emptyEl = document.getElementById("empty");
 const formEl = document.getElementById("add-form");
@@ -60,8 +83,11 @@ themeButtons.forEach((btn) => {
     applyThemeLocally();
     try {
       await invoke("set_theme", { theme: themeMode });
+      const comoSeLlama = { system: "automático", light: "claro", dark: "oscuro" };
+      aviso(`Tema ${comoSeLlama[themeMode] || themeMode} aplicado`);
     } catch (err) {
       console.error("set_theme:", err);
+      aviso("No se pudo cambiar el tema", "error");
     }
   });
 });
@@ -94,8 +120,10 @@ function renderIconGrid() {
           selectedIcon = name;
           iconCurrent.src = `appicons/${name}.svg`;
           renderIconGrid();
+          aviso("Icono aplicado");
         } catch (err) {
           console.error("set_app_icon:", err);
+          aviso("No se pudo aplicar el icono", "error");
         }
       });
       return btn;
@@ -125,9 +153,9 @@ async function initIconPicker() {
 const folderError = document.getElementById("folder-error");
 
 const FOLDER_FIELDS = [
-  { id: "download-dir", command: "set_download_dir" },
-  { id: "temp-dir", command: "set_temp_dir" },
-  { id: "log-dir", command: "set_log_dir" },
+  { id: "download-dir", command: "set_download_dir", nombre: "descargas" },
+  { id: "temp-dir", command: "set_temp_dir", nombre: "temporales" },
+  { id: "log-dir", command: "set_log_dir", nombre: "registros" },
 ];
 
 function showFolderError(message) {
@@ -139,9 +167,11 @@ async function saveFolder(field, value) {
   try {
     await invoke(field.command, { path: value.trim() });
     showFolderError("");
+    aviso(`Carpeta de ${field.nombre} guardada`);
     return true;
   } catch (err) {
     showFolderError(String(err));
+    aviso(`No se pudo guardar la carpeta de ${field.nombre}`, "error");
     return false;
   }
 }
@@ -221,18 +251,56 @@ async function initToggles() {
         await invoke("set_toggle", { name, enabled: input.checked });
       } catch (err) {
         console.error("set_toggle:", err);
+        // El ajuste no se guardó: la casilla vuelve a donde estaba, o
+        // enseñaría un estado que no es el de verdad (UX-01).
+        input.checked = !input.checked;
+        aviso("No se pudo guardar el ajuste: " + err, "error");
       }
     });
   }
 }
 
 // ── Acerca de ───────────────────────────────────────────
-/** Compara dos versiones «x.y.z». Devuelve true si `a` es mayor que `b`. */
+/**
+ * Compara dos versiones y dice si `a` es más nueva que `b`.
+ *
+ * SemVer, no tres números sueltos: una publicación de prueba como
+ * `0.5.0-rc.1` es **anterior** a `0.5.0`, y comparando solo los tres primeros
+ * números las dos empataban y una beta se ofrecía como si fuera la final.
+ * Lo que va detrás de `+` es metadato de compilación y no cuenta para nada.
+ */
 function esMayor(a, b) {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  const partes = (v) => {
+    const [nucleo, previa = ""] = String(v).split("+")[0].split("-", 2);
+    const numeros = nucleo.split(".").map((n) => parseInt(n, 10) || 0);
+    return { numeros, previa };
+  };
+  const va = partes(a);
+  const vb = partes(b);
   for (let i = 0; i < 3; i++) {
-    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+    const na = va.numeros[i] || 0;
+    const nb = vb.numeros[i] || 0;
+    if (na !== nb) return na > nb;
+  }
+  // Mismo número: manda la etiqueta de prueba. Sin etiqueta es la definitiva,
+  // y una definitiva gana a cualquier `-rc`, `-beta`…
+  if (va.previa === vb.previa) return false;
+  if (!va.previa) return true;
+  if (!vb.previa) return false;
+  // Dos etiquetas: se comparan campo a campo, los numéricos como números.
+  const ca = va.previa.split(".");
+  const cb = vb.previa.split(".");
+  for (let i = 0; i < Math.max(ca.length, cb.length); i++) {
+    const xa = ca[i];
+    const xb = cb[i];
+    if (xa === undefined) return false; // la más corta es la anterior
+    if (xb === undefined) return true;
+    if (xa === xb) continue;
+    const na = /^\d+$/.test(xa);
+    const nb = /^\d+$/.test(xb);
+    if (na && nb) return Number(xa) > Number(xb);
+    if (na !== nb) return !na; // un campo numérico va antes que uno de texto
+    return xa > xb;
   }
   return false;
 }
@@ -595,8 +663,61 @@ async function loadDiagnostics() {
   }
 }
 
+// ── Visor del registro ──────────────────────────────────
+// Antes había que salir de Wrusp, abrir la carpeta y buscar `wrusp.log` en un
+// editor. Se leen solo las últimas líneas: el fichero llega a varios megas.
+const LOG_LINEAS = 300;
+
+/** Qué deja pasar cada filtro. Se comparan en minúsculas. */
+const LOG_FILTROS = {
+  todo: () => true,
+  wrusp: (l) => l.includes("wrusp:"),
+  medios: (l) =>
+    /v[íi]deo|medio|gstreamer|qtdemux|h264|avdec|codec|c[óo]dec|blob|data:|mediaload/.test(l),
+  red: (l) => /websocket|csp|content security|network|http|connect|tls/.test(l),
+  errores: (l) => /error|fallo|critical|warning|panic|refused/.test(l),
+};
+
+let logCrudo = "";
+
+function pintarRegistro() {
+  const salida = document.getElementById("log-lines");
+  const resumen = document.getElementById("log-summary");
+  const filtro = LOG_FILTROS[document.getElementById("log-filter").value] || LOG_FILTROS.todo;
+  const busqueda = document.getElementById("log-search").value.trim().toLowerCase();
+
+  const todas = logCrudo ? logCrudo.split("\n") : [];
+  const mostradas = todas.filter((linea) => {
+    const minuscula = linea.toLowerCase();
+    return filtro(minuscula) && (!busqueda || minuscula.includes(busqueda));
+  });
+  // `textContent`, nunca `innerHTML`: el registro trae texto de WhatsApp y de
+  // la consola de la página, y no tiene por qué interpretarse como marcado.
+  salida.textContent = mostradas.join("\n") || "(nada que coincida)";
+  salida.scrollTop = salida.scrollHeight;
+  resumen.textContent = todas.length
+    ? `Mostrando ${mostradas.length} de las últimas ${todas.length} líneas.`
+    : "El registro está vacío.";
+}
+
+async function cargarRegistro() {
+  const resumen = document.getElementById("log-summary");
+  resumen.textContent = "Leyendo…";
+  try {
+    logCrudo = await invoke("get_log_tail", { lines: LOG_LINEAS });
+    pintarRegistro();
+  } catch (err) {
+    logCrudo = "";
+    resumen.textContent = "No se pudo leer el registro: " + err;
+    console.error("get_log_tail:", err);
+  }
+}
+
 function initDiagnostics() {
-  document.getElementById("refresh-diagnostics").addEventListener("click", loadDiagnostics);
+  document.getElementById("refresh-diagnostics").addEventListener("click", async () => {
+    await loadDiagnostics();
+    aviso("Diagnóstico actualizado");
+  });
   const statusEl = document.getElementById("diag-action-status");
   document.getElementById("clear-gst-cache").addEventListener("click", async () => {
     statusEl.textContent = "Limpiando…";
@@ -604,10 +725,42 @@ function initDiagnostics() {
       await invoke("clear_gstreamer_cache");
       statusEl.textContent = "Caché de GStreamer borrada con éxito.";
       statusEl.style.color = "var(--accent)";
+      aviso("Caché de GStreamer borrada");
       await loadDiagnostics();
     } catch (err) {
       statusEl.textContent = "Error: " + err;
       statusEl.style.color = "var(--danger)";
+      aviso("No se pudo borrar la caché", "error");
+    }
+  });
+
+  document.getElementById("copy-report").addEventListener("click", async () => {
+    try {
+      const informe = await invoke("diagnostic_report");
+      await invoke("copy_text", { text: informe });
+      aviso("Informe copiado: pégalo en la incidencia");
+    } catch (err) {
+      aviso("No se pudo copiar el informe", "error");
+      console.error("diagnostic_report:", err);
+    }
+  });
+
+  // El registro se lee al desplegarlo, no al abrir ajustes: leer megas de
+  // fichero para algo que casi nadie mira es trabajo por nada.
+  const visor = document.getElementById("log-viewer");
+  visor.addEventListener("toggle", () => {
+    if (visor.open && !logCrudo) cargarRegistro();
+  });
+  document.getElementById("log-refresh").addEventListener("click", cargarRegistro);
+  document.getElementById("log-filter").addEventListener("change", pintarRegistro);
+  document.getElementById("log-search").addEventListener("input", pintarRegistro);
+  document.getElementById("log-copy").addEventListener("click", async () => {
+    try {
+      await invoke("copy_text", { text: document.getElementById("log-lines").textContent });
+      aviso("Registro copiado al portapapeles");
+    } catch (err) {
+      aviso("No se pudo copiar el registro", "error");
+      console.error("copy_text:", err);
     }
   });
 }

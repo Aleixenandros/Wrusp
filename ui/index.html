@@ -152,6 +152,13 @@
             <input data-toggle="autostart" type="checkbox" />
             <span>Iniciar automáticamente al encender el equipo</span>
           </label>
+          <label class="toggle">
+            <input data-toggle="spellCheck" type="checkbox" />
+            <span>Corregir la ortografía al escribir</span>
+          </label>
+          <p class="hint">
+            El corrector usa los diccionarios del sistema en los idiomas de tu escritorio. Se aplica a las cuentas que abras después de cambiarlo.
+          </p>
           <p class="hint">
             Las notificaciones salen del aviso de WhatsApp. Al hacer clic en un aviso, Wrusp se enfocará abriendo la cuenta correspondiente.
           </p>
@@ -205,8 +212,31 @@
           <div class="diag-actions">
             <button type="button" id="refresh-diagnostics">Actualizar</button>
             <button type="button" id="clear-gst-cache">Limpiar caché de GStreamer</button>
+            <button type="button" id="copy-report">Copiar informe de diagnóstico</button>
             <span id="diag-action-status" class="hint"></span>
           </div>
+          <p class="hint">
+            El informe lleva versión, motor, códecs y tamaños, y es lo que hace falta para abrir una incidencia. No lleva nombres de cuentas, identificadores ni mensajes, y las rutas personales salen como <code>~</code>.
+          </p>
+
+          <!-- ── Registro ─────────────────────────────── -->
+          <details class="log-viewer" id="log-viewer">
+            <summary>Ver el registro</summary>
+            <div class="log-controls">
+              <input type="search" id="log-search" placeholder="Buscar en el registro" />
+              <select id="log-filter" aria-label="Filtrar el registro">
+                <option value="todo">Todo</option>
+                <option value="wrusp">Solo Wrusp</option>
+                <option value="medios">Vídeo y medios</option>
+                <option value="red">Red y CSP</option>
+                <option value="errores">Errores</option>
+              </select>
+              <button type="button" id="log-refresh">Actualizar</button>
+              <button type="button" id="log-copy">Copiar</button>
+            </div>
+            <p class="hint" id="log-summary"></p>
+            <pre class="log-lines" id="log-lines" tabindex="0"></pre>
+          </details>
           <p class="hint">
             Si los vídeos no se reproducen tras instalar códecs en tu distribución, pulsa «Limpiar caché de GStreamer» y reinicia Wrusp con «Salir» desde la bandeja.
           </p>
@@ -251,6 +281,7 @@
       </div>
     </div>
   </main>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
   <script src="main.js"></script>
 </body>
 </html>

@@ -49,7 +49,7 @@ fn default_icon() -> String {
     DEFAULT_ICON.to_string()
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub accounts: Vec<Account>,
@@ -84,10 +84,113 @@ pub struct AppConfig {
     /// reproducen (hasta cinco por sesión), para poder analizarlos.
     #[serde(default)]
     pub save_failed_media: bool,
+    /// Dónde y cómo estaba la ventana la última vez.
+    #[serde(default)]
+    pub window: WindowGeometry,
+    /// Corrector ortográfico en la caja de escribir de WhatsApp.
+    #[serde(default = "default_true")]
+    pub spell_check: bool,
+}
+
+/// Posición, tamaño y estado de la ventana principal, para devolverla donde
+/// estaba en el arranque siguiente.
+///
+/// Todo en píxeles **físicos**: son los que hablan los monitores. En logicos
+/// no se puede: cada pantalla tiene su factor de escala y la misma coordenada
+/// significa sitios distintos según dónde caiga.
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    /// Posición exterior (la que fija el gestor de ventanas).
+    #[serde(default)]
+    pub x: Option<i32>,
+    #[serde(default)]
+    pub y: Option<i32>,
+    /// Tamaño interior, que es el que se restaura.
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Maximizada. Se guarda aparte del tamaño: al maximizar **no** se pisa el
+    /// tamaño anterior, o al restaurar la ventana volvería del tamaño de la
+    /// pantalla entera y el usuario perdería el suyo.
+    #[serde(default)]
+    pub maximized: bool,
+    /// Lo que el motor añade por su cuenta al tamaño que se le pide: la
+    /// sombra de la decoración y la barra de título.
+    ///
+    /// Medido en este equipo (GNOME sobre Wayland, escala 1): pedir 900×600
+    /// devuelve 1070×808, o sea 170 y 208 de más. Sin esto, guardar lo que
+    /// informa el motor y volver a pedirlo **hace crecer la ventana en cada
+    /// arranque**, que es el fallo clásico de recordar la geometría. Se
+    /// aprende sola en cada sesión: depende del tema del escritorio, no de
+    /// Wrusp, y puede cambiar sin que cambie nada aquí.
+    #[serde(default)]
+    pub deco_w: u32,
+    #[serde(default)]
+    pub deco_h: u32,
+}
+
+/// Rectángulo en píxeles físicos: `(x, y, ancho, alto)`.
+pub type Rect = (i32, i32, u32, u32);
+
+/// Lo que se solapan dos rectángulos, como `(ancho, alto)` en píxeles.
+///
+/// Las dos medidas por separado, no el área: una franja de 50 px de ancho por
+/// 720 de alto da un área enorme y no deja nada que agarrar con el ratón.
+fn overlap(a: Rect, b: Rect) -> (i32, i32) {
+    let ancho = (a.0 + a.2 as i32).min(b.0 + b.2 as i32) - a.0.max(b.0);
+    let alto = (a.1 + a.3 as i32).min(b.1 + b.3 as i32) - a.1.max(b.1);
+    (ancho.max(0), alto.max(0))
+}
+
+/// Ancho y alto mínimos que tienen que quedar dentro de una pantalla para dar
+/// la posición por buena: un trozo agarrable con el ratón.
+const MIN_VISIBLE: (u32, u32) = (200, 80);
+
+/// ¿Se vería la ventana donde se guardó?
+///
+/// Si se desconecta la pantalla en la que estaba, sus coordenadas quedan
+/// apuntando a un sitio que ya no existe y la ventana nace fuera de la vista,
+/// sin forma de alcanzarla con el ratón. Cuando eso pasa se conserva el
+/// tamaño y se deja que el sistema decida dónde ponerla.
+pub fn geometry_on_screen(ventana: Rect, monitores: &[Rect]) -> bool {
+    monitores.iter().any(|m| {
+        let (ancho, alto) = overlap(ventana, *m);
+        ancho >= MIN_VISIBLE.0 as i32 && alto >= MIN_VISIBLE.1 as i32
+    })
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Los valores de una instalación nueva.
+///
+/// A mano, y no derivado: derivarlo daba `false` en todo y `""` en el icono,
+/// que **no** es lo que dicen los `#[serde(default = …)]` de arriba. Se
+/// notaba solo donde no hay `config.json` que leer —una instalación recién
+/// hecha, o una a la que se le apartó el fichero por ilegible—: arrancaba sin
+/// notificaciones, sin icono elegido y cerrando la ventana en vez de irse a
+/// la bandeja, que es justo lo contrario de lo documentado. La prueba de
+/// abajo compara los dos caminos para que no puedan volver a separarse.
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            accounts: Vec::new(),
+            theme: ThemeMode::default(),
+            icon: default_icon(),
+            download_dir: String::new(),
+            temp_dir: String::new(),
+            log_dir: String::new(),
+            close_to_tray: default_true(),
+            notifications: default_true(),
+            notification_privacy: false,
+            autostart: false,
+            save_failed_media: false,
+            window: WindowGeometry::default(),
+            spell_check: default_true(),
+        }
+    }
 }
 
 /// Carpetas efectivas mostradas en ajustes: el valor configurado y el que se
@@ -270,6 +373,7 @@ pub struct Toggles {
     pub notification_privacy: bool,
     pub autostart: bool,
     pub save_failed_media: bool,
+    pub spell_check: bool,
 }
 
 #[tauri::command]
@@ -281,6 +385,7 @@ pub fn get_toggles(state: tauri::State<'_, ConfigState>) -> Toggles {
         notification_privacy: cfg.notification_privacy,
         autostart: cfg.autostart,
         save_failed_media: cfg.save_failed_media,
+        spell_check: cfg.spell_check,
     }
 }
 
@@ -334,6 +439,10 @@ pub fn set_toggle(app: AppHandle, name: String, enabled: bool) -> Result<(), Str
         }
         "saveFailedMedia" => {
             cfg.save_failed_media = enabled;
+            Ok(())
+        }
+        "spellCheck" => {
+            cfg.spell_check = enabled;
             Ok(())
         }
         other => Err(format!("Ajuste desconocido: {other}")),
@@ -454,6 +563,205 @@ pub fn get_diagnostics(state: tauri::State<'_, ConfigState>) -> SystemDiagnostic
     }
 }
 
+/// Últimas `lines` líneas del registro, para el visor de Ajustes → Diagnóstico.
+///
+/// El registro llega a varios megas, así que no se lee entero: se salta al
+/// final y se retrocede a trozos hasta juntar los saltos de línea que hagan
+/// falta. Leer 5 MB para enseñar 300 líneas es trabajo y memoria por nada.
+#[tauri::command]
+pub fn get_log_tail(state: tauri::State<'_, ConfigState>, lines: usize) -> Result<String, String> {
+    let log_dir = {
+        let cfg = state.0.lock().unwrap();
+        crate::logs::effective_dir(&cfg.log_dir)
+    };
+    tail_of_file(&log_dir.join("wrusp.log"), lines)
+}
+
+/// Cuánto se lee de golpe al retroceder desde el final del fichero.
+const TAIL_CHUNK: u64 = 64 * 1024;
+/// Tope duro de líneas, para que la petición de la página no pueda pedir el
+/// fichero entero por la puerta de atrás.
+const TAIL_MAX_LINES: usize = 2000;
+
+fn tail_of_file(path: &Path, lines: usize) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let lines = lines.clamp(1, TAIL_MAX_LINES);
+    let mut fichero =
+        fs::File::open(path).map_err(|e| format!("No se pudo abrir el registro: {e}"))?;
+    let total = fichero
+        .metadata()
+        .map_err(|e| format!("No se pudo medir el registro: {e}"))?
+        .len();
+
+    let mut desde = total;
+    let mut buffer: Vec<u8> = Vec::new();
+    // Hacia atrás a trozos, hasta tener una línea de más: la primera puede
+    // venir cortada por la mitad y se descarta.
+    while desde > 0 && buffer.iter().filter(|b| **b == b'\n').count() <= lines {
+        let paso = TAIL_CHUNK.min(desde);
+        desde -= paso;
+        fichero
+            .seek(SeekFrom::Start(desde))
+            .map_err(|e| format!("No se pudo recorrer el registro: {e}"))?;
+        let mut trozo = vec![0u8; paso as usize];
+        fichero
+            .read_exact(&mut trozo)
+            .map_err(|e| format!("No se pudo leer el registro: {e}"))?;
+        trozo.extend_from_slice(&buffer);
+        buffer = trozo;
+    }
+
+    // El registro trae salida de WebKit y de GStreamer, que no siempre es
+    // UTF-8 válido: se sustituye en vez de fallar.
+    let texto = String::from_utf8_lossy(&buffer);
+    let ultimas: Vec<&str> = texto.lines().rev().take(lines).collect();
+    Ok(ultimas.into_iter().rev().collect::<Vec<_>>().join("\n"))
+}
+
+/// Informe de diagnóstico en Markdown, listo para pegar en una incidencia.
+///
+/// Lo que lleva es lo que se pide en cada incidencia de vídeo o de medios, y
+/// nada más. **No lleva** nombres de cuentas, identificadores de cuenta,
+/// números de teléfono ni una sola línea del registro: son mensajes del
+/// usuario. Las rutas del home se acortan a `~`, porque el nombre de la
+/// cuenta del sistema suele ser el nombre real de la persona.
+#[tauri::command]
+pub fn diagnostic_report(app: AppHandle, state: tauri::State<'_, ConfigState>) -> String {
+    let diag = get_diagnostics(state.clone());
+    let cuentas = state.0.lock().unwrap().accounts.len();
+    let ventana = app
+        .get_webview_window(crate::shell::MAIN_WINDOW)
+        .or_else(|| app.webview_windows().values().next().cloned());
+    let pantalla = match ventana {
+        Some(w) => match (w.inner_size(), w.scale_factor()) {
+            (Ok(size), Ok(escala)) => format!("{}×{} px, escala {escala}", size.width, size.height),
+            _ => "desconocida".to_string(),
+        },
+        None => "sin ventana".to_string(),
+    };
+    report_markdown(
+        &diag,
+        cuentas,
+        &pantalla,
+        &sistema_operativo(),
+        &variables_multimedia(),
+    )
+}
+
+/// Nombre de la distribución, de `/etc/os-release`. Es lo primero que se
+/// pregunta en una incidencia de Linux.
+fn sistema_operativo() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let contenido = fs::read_to_string("/etc/os-release").unwrap_or_default();
+        for linea in contenido.lines() {
+            if let Some(valor) = linea.strip_prefix("PRETTY_NAME=") {
+                return valor.trim().trim_matches(['"', '\'']).to_string();
+            }
+        }
+        "Linux".to_string()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::consts::OS.to_string()
+    }
+}
+
+/// Las variables del entorno que cambian cómo se decodifica el vídeo. Solo
+/// estas: el entorno entero lleva de todo, incluido el nombre del usuario.
+fn variables_multimedia() -> Vec<(String, String)> {
+    [
+        "GST_PLUGIN_FEATURE_RANK",
+        "WEBKIT_GST_DISABLE_GL_SINK",
+        "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+        "GST_DEBUG",
+        "WRUSP_GUARDAR_MEDIOS_FALLIDOS",
+    ]
+    .iter()
+    .filter_map(|k| std::env::var(k).ok().map(|v| ((*k).to_string(), v)))
+    .collect()
+}
+
+/// Sustituye la carpeta personal por `~`.
+///
+/// El nombre de la cuenta del sistema suele ser el nombre real de quien la
+/// usa, y aparece en todas las rutas que enseña el informe.
+fn anonymize_path(texto: &str, home: &str) -> String {
+    if home.is_empty() || home == "/" {
+        return texto.to_string();
+    }
+    texto.replace(home, "~")
+}
+
+fn megas(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// Arma el informe. Aparte de `diagnostic_report` para poder probarlo sin
+/// aplicación ni ventana.
+fn report_markdown(
+    diag: &SystemDiagnostics,
+    cuentas: usize,
+    pantalla: &str,
+    sistema: &str,
+    variables: &[(String, String)],
+) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut salida = String::from("### Diagnóstico de Wrusp\n\n");
+    let mut fila = |clave: &str, valor: String| {
+        salida.push_str(&format!(
+            "- **{clave}:** {}\n",
+            anonymize_path(&valor, &home)
+        ));
+    };
+    fila("Wrusp", env!("CARGO_PKG_VERSION").to_string());
+    fila("Sistema", format!("{sistema} ({})", diag.os_info));
+    fila("Motor", diag.webkit_version.clone());
+    fila(
+        "Decodificador H.264",
+        if diag.has_h264_decoder {
+            diag.h264_decoder_name.clone()
+        } else {
+            "no detectado".to_string()
+        },
+    );
+    fila(
+        "Decodificador AAC",
+        if diag.has_aac_decoder {
+            "avdec_aac".to_string()
+        } else {
+            "no detectado".to_string()
+        },
+    );
+    fila("Ventana", pantalla.to_string());
+    fila("Cuentas configuradas", cuentas.to_string());
+    fila(
+        "En disco",
+        format!(
+            "perfiles {}, caché de GStreamer {}, registro {}",
+            megas(diag.profiles_size),
+            megas(diag.gstreamer_cache_size),
+            megas(diag.log_size)
+        ),
+    );
+    if variables.is_empty() {
+        fila("Variables multimedia", "ninguna".to_string());
+    } else {
+        let lista = variables
+            .iter()
+            .map(|(k, v)| format!("`{k}={v}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        fila("Variables multimedia", lista);
+    }
+    salida.push_str(
+        "\n_Sin nombres de cuenta, identificadores ni contenido de mensajes. Las rutas personales aparecen como `~`._\n",
+    );
+    salida
+}
+
 /// Borra los ficheros de caché del registro de GStreamer para forzar su reescaneo al reiniciar.
 #[tauri::command]
 pub fn clear_gstreamer_cache() -> Result<(), String> {
@@ -540,6 +848,58 @@ pub fn unique_path(path: PathBuf) -> PathBuf {
     let candidate = parent.join(format!("{stem} ({nanos}){ext}"));
     let _ = reservar(&candidate);
     candidate
+}
+
+/// Idiomas para el corrector ortográfico, sacados del entorno del escritorio.
+///
+/// El motor los quiere como `es_ES`, que es como se llaman los diccionarios de
+/// hunspell. Las variables del sistema traen cosas como
+/// `es_ES.UTF-8`, `ca_ES@valencia` o la lista `LANGUAGE=es:en`, así que se
+/// limpian y se quitan los repetidos conservando el orden de preferencia.
+/// Inglés se añade al final: casi siempre está instalado y es el idioma en el
+/// que se escriben la mitad de los mensajes técnicos.
+pub fn spell_check_languages() -> Vec<String> {
+    let mut crudos = Vec::new();
+    // `LANGUAGE` trae una lista de preferencias separada por `:`; el resto,
+    // un idioma cada una. La limpieza se encarga de partirlas.
+    for variable in ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(valor) = std::env::var(variable) {
+            crudos.push(valor);
+        }
+    }
+    crudos.push("en_US".to_string());
+    normalize_languages(&crudos)
+}
+
+/// Limpia una lista de valores de locale y deja los nombres de diccionario.
+///
+/// Parte también por `:`, que es como `LANGUAGE` separa sus preferencias: así
+/// da igual de qué variable venga cada valor.
+fn normalize_languages(crudos: &[String]) -> Vec<String> {
+    let mut salida: Vec<String> = Vec::new();
+    for crudo in crudos.iter().flat_map(|c| c.split(':')) {
+        // `es_ES.UTF-8@euro` → `es_ES`; `es-ES` → `es_ES`.
+        let limpio = crudo
+            .split(['.', '@'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .replace('-', "_");
+        // `C` y `POSIX` no son idiomas, son la ausencia de uno.
+        if limpio.is_empty() || limpio == "C" || limpio == "POSIX" {
+            continue;
+        }
+        if !limpio
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        if !salida.contains(&limpio) {
+            salida.push(limpio);
+        }
+    }
+    salida
 }
 
 /// Datos del «Acerca de».
@@ -660,13 +1020,42 @@ pub fn open_in_browser(url: &tauri::Url) {
     }
 }
 
-/// Abre una dirección desde la página de ajustes.
+/// ¿Puede la página de ajustes pedir que se abra esta dirección?
 ///
-/// Restringido al propio proyecto: esa página es nuestra, pero un comando que
-/// abra cualquier cosa es una puerta que no hace falta dejar abierta.
+/// Restringido al repositorio del proyecto: esa página es nuestra, pero un
+/// comando que abra cualquier cosa es una puerta que no hace falta dejar
+/// abierta, y por ella pasan direcciones que vienen de la API de GitHub (la
+/// descarga de una versión, sus notas).
+///
+/// Se compara **la dirección entendida**, no su principio. Un `starts_with`
+/// sobre `https://github.com/Aleixenandros/Wrusp` aceptaba
+/// `…/Wrusp-falso/algo` y `…/Wrusp.evil.com`, que son otro sitio: el nombre
+/// del repositorio tiene que acabar donde acaba, y el anfitrión tiene que ser
+/// `github.com` exactamente, no algo que termine en eso.
+fn external_url_allowed(url: &str) -> bool {
+    let Ok(url) = url.parse::<tauri::Url>() else {
+        return false;
+    };
+    if url.scheme() != "https" || url.port_or_known_default() != Some(443) {
+        return false;
+    }
+    // Sin credenciales incrustadas: `https://github.com@otro.sitio/` tiene
+    // anfitrión `otro.sitio`, pero aun así no hay por qué llevarlas.
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    if url.host_str() != Some("github.com") {
+        return false;
+    }
+    let ruta = url.path();
+    ruta == "/Aleixenandros/Wrusp" || ruta.starts_with("/Aleixenandros/Wrusp/")
+}
+
+/// Abre una dirección del proyecto desde la página de ajustes.
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {
-    if !url.starts_with("https://github.com/Aleixenandros/Wrusp") {
+    if !external_url_allowed(&url) {
+        eprintln!("wrusp: dirección no permitida desde ajustes: {url}");
         return Err("Dirección no permitida".into());
     }
     std::process::Command::new(ABRIDOR)
@@ -1110,6 +1499,252 @@ mod tests {
         ];
         for (os_release, esperado, caso) in casos {
             assert_eq!(package_suffix_from(os_release), esperado, "{caso}");
+        }
+    }
+
+    /// Sin `config.json` se arranca con `AppConfig::default()`, y eso tiene
+    /// que valer lo mismo que leer un JSON vacío: es la misma frase dicha en
+    /// dos sitios, y se separaron.
+    #[test]
+    fn la_configuracion_de_una_instalacion_nueva_es_la_documentada() {
+        let por_defecto = AppConfig::default();
+        let desde_json: AppConfig = serde_json::from_str("{}").unwrap();
+
+        for (nombre, a, b) in [
+            (
+                "bandeja al cerrar",
+                por_defecto.close_to_tray,
+                desde_json.close_to_tray,
+            ),
+            (
+                "notificaciones",
+                por_defecto.notifications,
+                desde_json.notifications,
+            ),
+            (
+                "privacidad",
+                por_defecto.notification_privacy,
+                desde_json.notification_privacy,
+            ),
+            ("autoarranque", por_defecto.autostart, desde_json.autostart),
+            (
+                "volcado de medios",
+                por_defecto.save_failed_media,
+                desde_json.save_failed_media,
+            ),
+            ("corrector", por_defecto.spell_check, desde_json.spell_check),
+        ] {
+            assert_eq!(a, b, "{nombre}: los dos caminos deben coincidir");
+        }
+        assert_eq!(por_defecto.icon, desde_json.icon, "icono");
+        assert_eq!(
+            por_defecto.icon, DEFAULT_ICON,
+            "y es el icono elegido por defecto"
+        );
+
+        // Y lo que de verdad importa de esos valores:
+        assert!(
+            por_defecto.close_to_tray,
+            "cerrar la ventana deja la app en la bandeja"
+        );
+        assert!(por_defecto.notifications, "una app de mensajería avisa");
+        assert!(por_defecto.spell_check, "el corrector viene puesto");
+        assert!(
+            !por_defecto.autostart,
+            "pero no se cuela en el arranque del equipo"
+        );
+        assert!(
+            !por_defecto.save_failed_media,
+            "ni guarda vídeos de nadie sin que se lo pidan"
+        );
+    }
+
+    /// El visor de ajustes enseña el final del registro, que llega a varios
+    /// megas: ni se lee entero ni se devuelve más de lo pedido.
+    #[test]
+    fn la_cola_del_registro_devuelve_las_ultimas_lineas() {
+        let dir = carpeta_de_prueba("cola");
+        let path = dir.join("wrusp.log");
+        let contenido: String = (1..=500).map(|n| format!("línea {n}\n")).collect();
+        fs::write(&path, &contenido).unwrap();
+
+        let cola = tail_of_file(&path, 3).unwrap();
+        assert_eq!(cola, "línea 498\nlínea 499\nlínea 500");
+
+        // Más líneas de las que hay: se devuelve lo que hay, entero y en orden.
+        let todo = tail_of_file(&path, 10_000).unwrap();
+        assert_eq!(todo.lines().count(), 500, "no se pierde ninguna");
+        assert!(todo.starts_with("línea 1\n"), "empieza por el principio");
+
+        // Un fichero más grande que el trozo de lectura obliga a retroceder
+        // varias veces: es el caso que tiene el registro real.
+        let gordo = dir.join("gordo.log");
+        let relleno: String = (1..=20_000).map(|n| format!("ruido {n}\n")).collect();
+        fs::write(&gordo, &relleno).unwrap();
+        assert!(
+            relleno.len() as u64 > TAIL_CHUNK,
+            "el banco tiene que cruzar un trozo"
+        );
+        let cola = tail_of_file(&gordo, 2).unwrap();
+        assert_eq!(cola, "ruido 19999\nruido 20000");
+
+        assert!(tail_of_file(&dir.join("no-existe.log"), 5).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// El informe se pega en incidencias públicas: lo que no puede llevar es
+    /// tan importante como lo que lleva.
+    #[test]
+    fn el_informe_de_diagnostico_no_lleva_datos_personales() {
+        let diag = SystemDiagnostics {
+            webkit_version: "WebKitGTK 2.52.5".into(),
+            has_h264_decoder: true,
+            h264_decoder_name: "avdec_h264 (FFmpeg / libavcodec)".into(),
+            has_aac_decoder: true,
+            gstreamer_cache_size: 1024 * 1024,
+            profiles_size: 300 * 1024 * 1024,
+            log_size: 5 * 1024 * 1024,
+            os_info: "linux x86_64".into(),
+        };
+        let variables = [(
+            "GST_PLUGIN_FEATURE_RANK".to_string(),
+            "vah264dec:0".to_string(),
+        )];
+        let informe = report_markdown(
+            &diag,
+            2,
+            "1100×720 px, escala 1",
+            "Fedora Linux 44",
+            &variables,
+        );
+
+        for esperado in [
+            env!("CARGO_PKG_VERSION"),
+            "Fedora Linux 44",
+            "WebKitGTK 2.52.5",
+            "avdec_h264",
+            "GST_PLUGIN_FEATURE_RANK",
+            "300.0 MiB",
+        ] {
+            assert!(informe.contains(esperado), "debería informar de {esperado}");
+        }
+        assert!(!informe.contains('@'), "nada que parezca un correo");
+
+        // La carpeta personal lleva el nombre de quien usa el equipo.
+        let con_home = anonymize_path(
+            "perfiles en /home/aleixenandros/.local/share/wrusp/profiles",
+            "/home/aleixenandros",
+        );
+        assert_eq!(con_home, "perfiles en ~/.local/share/wrusp/profiles");
+        // Sin HOME que sustituir, el texto se queda como está en vez de
+        // llenarse de tildes.
+        assert_eq!(anonymize_path("/usr/share", ""), "/usr/share");
+        assert_eq!(anonymize_path("/usr/share", "/"), "/usr/share");
+    }
+
+    /// Los idiomas del corrector salen de variables que traen de todo.
+    #[test]
+    fn los_idiomas_del_corrector_se_limpian_y_no_se_repiten() {
+        let casos: [(&[&str], &[&str], &str); 6] = [
+            (&["es_ES.UTF-8"], &["es_ES"], "la codificación sobra"),
+            (&["ca_ES@valencia"], &["ca_ES"], "la variante también"),
+            (&["es-ES"], &["es_ES"], "el guion se normaliza"),
+            (
+                &["es:en", "es_ES.UTF-8", "en_US"],
+                &["es", "en", "es_ES", "en_US"],
+                "se conserva el orden de preferencia y no se repite",
+            ),
+            (&["C", "POSIX", ""], &[], "eso no son idiomas"),
+            (
+                &["es_ES; rm -rf /", "en_US"],
+                &["en_US"],
+                "lo que no parece un idioma no llega al motor",
+            ),
+        ];
+        for (entrada, esperado, caso) in casos {
+            let crudos: Vec<String> = entrada.iter().map(|s| (*s).to_string()).collect();
+            assert_eq!(normalize_languages(&crudos), esperado, "{caso}");
+        }
+    }
+
+    /// Una ventana recordada en una pantalla que ya no está no puede
+    /// restaurarse donde estaba: nacería fuera de la vista.
+    #[test]
+    fn la_posicion_guardada_solo_vale_si_se_ve_en_alguna_pantalla() {
+        // Portátil (0,0 1920x1080) con una pantalla externa a su derecha.
+        let dos = [(0, 0, 1920, 1080), (1920, 0, 2560, 1440)];
+        let solo_portatil = [(0, 0, 1920, 1080)];
+
+        let casos: [(Rect, &[Rect], bool, &str); 7] = [
+            ((100, 100, 1100, 720), &dos, true, "dentro del portátil"),
+            ((2200, 300, 1100, 720), &dos, true, "dentro de la externa"),
+            (
+                (2200, 300, 1100, 720),
+                &solo_portatil,
+                false,
+                "en la externa, que ya no está conectada",
+            ),
+            (
+                (1870, 200, 1100, 720),
+                &solo_portatil,
+                false,
+                "a caballo, pero solo asoman 50 px: no hay de dónde agarrarla",
+            ),
+            (
+                (1600, 200, 1100, 720),
+                &solo_portatil,
+                true,
+                "a caballo con un trozo suficiente dentro",
+            ),
+            (
+                (-1100, 0, 1100, 720),
+                &dos,
+                false,
+                "justo a la izquierda de todo",
+            ),
+            ((0, 0, 1100, 720), &[], false, "sin pantallas que consultar"),
+        ];
+        for (ventana, monitores, esperado, caso) in casos {
+            assert_eq!(geometry_on_screen(ventana, monitores), esperado, "{caso}");
+        }
+    }
+
+    /// Por este comando pasan direcciones que vienen de la API de GitHub, así
+    /// que la comprobación es la única frontera entre «abrir el proyecto» y
+    /// «abrir lo que sea».
+    #[test]
+    fn open_external_solo_abre_el_repositorio_del_proyecto() {
+        let permitidas = [
+            "https://github.com/Aleixenandros/Wrusp",
+            "https://github.com/Aleixenandros/Wrusp/releases",
+            "https://github.com/Aleixenandros/Wrusp/releases/tag/v0.4.17",
+            "https://github.com/Aleixenandros/Wrusp/releases/download/v0.4.17/Wrusp-0.4.17-1.x86_64.rpm",
+            "https://github.com/Aleixenandros/Wrusp/blob/main/LICENSE",
+        ];
+        for url in permitidas {
+            assert!(external_url_allowed(url), "debería permitirse: {url}");
+        }
+
+        let prohibidas = [
+            // Las dos que colaba el `starts_with` anterior: otro repositorio y
+            // otro anfitrión que empiezan igual.
+            "https://github.com/Aleixenandros/Wrusp-falso/releases",
+            "https://github.com/Aleixenandros/Wruspicito",
+            "https://github.com.evil.example/Aleixenandros/Wrusp",
+            "https://github.com@otro.example/Aleixenandros/Wrusp",
+            // Otro dueño, otro esquema, otro puerto.
+            "https://github.com/otro/Wrusp/releases",
+            "http://github.com/Aleixenandros/Wrusp",
+            "https://github.com:8443/Aleixenandros/Wrusp",
+            // Esquemas que no deberían llegar nunca al escritorio.
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<h1>hola",
+            "",
+            "no es una dirección",
+        ];
+        for url in prohibidas {
+            assert!(!external_url_allowed(url), "no debería permitirse: {url}");
         }
     }
 

@@ -249,6 +249,7 @@ fn apagar_sesion_multimedia(settings: &webkit2gtk::Settings) {
 /// Activa las capacidades del webview y engancha permisos y notificaciones.
 #[cfg(target_os = "linux")]
 pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, account_id: &str) {
+    use tauri::Manager as _;
     use webkit2gtk::glib::ObjectExt;
     use webkit2gtk::{
         NotificationExt, NotificationPermissionRequest, PermissionRequestExt, SecurityOrigin,
@@ -295,6 +296,29 @@ pub fn configure(app: &tauri::AppHandle, webview: &tauri::webview::Webview, acco
             // Sin esto, cada audio y cada vídeo deja un control de medios
             // muerto en el escritorio (ver la función).
             apagar_sesion_multimedia(&settings);
+        }
+
+        // ── Corrector ortográfico ───────────────────────────────
+        // WebKitGTK lo trae apagado, así que WhatsApp Web no subrayaba nada
+        // ni ofrecía sugerencias al escribir. Los idiomas salen del entorno
+        // del escritorio; los diccionarios los pone el sistema (hunspell) y
+        // los que no estén instalados, el motor los ignora.
+        if let Some(ctx) = WebViewExt::context(&native) {
+            let activo = app
+                .try_state::<crate::config::ConfigState>()
+                .is_none_or(|cfg| cfg.0.lock().unwrap().spell_check);
+            let idiomas = if activo {
+                crate::config::spell_check_languages()
+            } else {
+                Vec::new()
+            };
+            if idiomas.is_empty() {
+                ctx.set_spell_checking_enabled(false);
+            } else {
+                let prestados: Vec<&str> = idiomas.iter().map(String::as_str).collect();
+                ctx.set_spell_checking_languages(&prestados);
+                ctx.set_spell_checking_enabled(true);
+            }
         }
 
         // ── Permiso de notificaciones, concedido de antemano ────

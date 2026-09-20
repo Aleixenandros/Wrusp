@@ -19,6 +19,9 @@ use tauri::{
 };
 
 pub const MAIN_WINDOW: &str = "main";
+
+/// Tamaño de la ventana la primera vez, en píxeles lógicos.
+const DEFAULT_SIZE: (f64, f64) = (1100.0, 720.0);
 pub const SETTINGS_VIEW: &str = "settings";
 
 const WHATSAPP_URL: &str = "https://web.whatsapp.com";
@@ -229,25 +232,227 @@ fn handle_command(app: &AppHandle, origin: &str, url: &tauri::Url) {
     });
 }
 
+/// Geometría de la ventana vista en el último evento, y cuándo se vio.
+///
+/// Redimensionar con el ratón dispara decenas de eventos por segundo, y cada
+/// uno escribiría `config.json` entero. Aquí solo se anota lo último; un hilo
+/// aparte lo guarda cuando el usuario suelta (ver `start_geometry_writer`).
+pub struct PendingGeometry {
+    pub pendiente: Mutex<Option<(crate::config::WindowGeometry, std::time::Instant)>>,
+    /// Lo que se le pidió a la ventana al arrancar, mientras no se haya
+    /// comparado con lo que el motor acabó informando. Se consume en el
+    /// primer guardado de la sesión, que es cuando la ventana ya está quieta
+    /// y la comparación vale (ver `deco_w` en la configuración).
+    pub pedido: Mutex<Option<(u32, u32)>>,
+}
+
+/// Cuánto hay que estar quieto para dar el movimiento por terminado.
+const GEOMETRY_QUIET: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Ritmo al que se mira si hay algo que guardar cuando nadie toca la ventana.
+const GEOMETRY_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Anota dónde está la ventana. Se llama desde el hilo de la interfaz, así que
+/// solo lee y apunta: el disco es cosa del hilo escritor.
+pub fn note_geometry(window: &tauri::Window<crate::runtime::Runtime>) {
+    if window.label() != MAIN_WINDOW {
+        return;
+    }
+    let Some(estado) = window.app_handle().try_state::<PendingGeometry>() else {
+        return;
+    };
+    let maximizada = window.is_maximized().unwrap_or(false);
+    let previa = window
+        .app_handle()
+        .try_state::<ConfigState>()
+        .map(|c| c.0.lock().unwrap().window)
+        .unwrap_or_default();
+
+    let mut geom = crate::config::WindowGeometry {
+        maximized: maximizada,
+        ..previa
+    };
+    // Maximizada se guarda el hecho, no las medidas: si se guardara el tamaño
+    // de la pantalla entera, al restaurar la ventana ya no volvería al suyo.
+    // Tampoco se guarda nada si está oculta o minimizada, que es cuando el
+    // gestor de ventanas devuelve tamaños de juguete o coordenadas absurdas.
+    if !maximizada {
+        let visible =
+            window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
+        let tamano = window.inner_size().ok();
+        let posicion = window.outer_position().ok();
+        if let (true, Some(tamano), Some(posicion)) = (visible, tamano, posicion) {
+            if tamano.width >= 200 && tamano.height >= 200 {
+                geom.width = Some(tamano.width);
+                geom.height = Some(tamano.height);
+                geom.x = Some(posicion.x);
+                geom.y = Some(posicion.y);
+            }
+        }
+    }
+    *estado.pendiente.lock().unwrap() = Some((geom, std::time::Instant::now()));
+}
+
+/// Hilo que guarda la geometría cuando la ventana lleva un rato quieta.
+///
+/// Uno solo para toda la ejecución: el alternativo era lanzar un hilo por
+/// evento, y un arrastre de dos segundos son más de cien.
+pub fn start_geometry_writer(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("wrusp-geometria".into())
+        .spawn(move || loop {
+            let Some(estado) = app.try_state::<PendingGeometry>() else {
+                std::thread::sleep(GEOMETRY_IDLE);
+                continue;
+            };
+            let (pendiente, espera) = {
+                let mut guard = estado.pendiente.lock().unwrap();
+                match *guard {
+                    // Quieta el tiempo suficiente: se guarda.
+                    Some((geom, visto)) if visto.elapsed() >= GEOMETRY_QUIET => {
+                        *guard = None;
+                        (Some(geom), GEOMETRY_IDLE)
+                    }
+                    // Todavía moviéndose: se espera lo que le falte.
+                    Some((_, visto)) => (None, GEOMETRY_QUIET - visto.elapsed()),
+                    // Nada que guardar: se duerme de verdad. Sin esto el hilo
+                    // despertaría cuatro veces por segundo toda la sesión.
+                    None => (None, GEOMETRY_IDLE),
+                }
+            };
+            let Some(mut geom) = pendiente else {
+                std::thread::sleep(espera);
+                continue;
+            };
+            // Primera vez que la ventana se queda quieta en esta sesión: ya
+            // se puede medir cuánto añade el motor a lo que se le pidió.
+            if let Some((pedido_w, pedido_h)) = estado.pedido.lock().unwrap().take() {
+                if let (Some(w), Some(h)) = (geom.width, geom.height) {
+                    geom.deco_w = w.saturating_sub(pedido_w);
+                    geom.deco_h = h.saturating_sub(pedido_h);
+                }
+            }
+            if let Err(err) = crate::config::mutate(&app, |cfg| {
+                cfg.window = geom;
+                Ok(())
+            }) {
+                eprintln!("wrusp: no se pudo guardar la geometría de la ventana: {err}");
+            }
+            std::thread::sleep(espera);
+        })
+        .ok();
+}
+
+/// Devuelve la ventana a donde estaba, si allí se sigue viendo algo.
+fn restore_geometry(
+    window: &tauri::Window<crate::runtime::Runtime>,
+    geom: crate::config::WindowGeometry,
+) -> Option<(u32, u32)> {
+    use tauri::{PhysicalPosition, PhysicalSize};
+
+    let mut pedido = None;
+    // Sin nada guardado se pide igualmente el tamaño por defecto, y por esta
+    // misma vía. No es un capricho: lo que el motor añade a un `set_size` no
+    // es lo mismo que añade al tamaño del constructor (38 px de barra de
+    // título de diferencia), así que pidiéndolo aquí la medida de la primera
+    // sesión ya sirve para la segunda y la ventana no da ningún salto.
+    if geom.width.is_none() || geom.height.is_none() {
+        let escala = window.scale_factor().unwrap_or(1.0);
+        let ancho = (DEFAULT_SIZE.0 * escala).round() as u32;
+        let alto = (DEFAULT_SIZE.1 * escala).round() as u32;
+        let _ = window.set_size(PhysicalSize::new(ancho, alto));
+        return Some((ancho, alto));
+    }
+    if let (Some(width), Some(height)) = (geom.width, geom.height) {
+        // Lo guardado es lo que informó el motor, que trae dentro la sombra
+        // de la decoración y la barra de título; se le pide descontándolas, o
+        // la ventana crecería un poco en cada arranque.
+        let pide_w = width.saturating_sub(geom.deco_w).max(320);
+        let pide_h = height.saturating_sub(geom.deco_h).max(240);
+        pedido = Some((pide_w, pide_h));
+        let _ = window.set_size(PhysicalSize::new(pide_w, pide_h));
+        if let (Some(x), Some(y)) = (geom.x, geom.y) {
+            let monitores: Vec<crate::config::Rect> = window
+                .available_monitors()
+                .unwrap_or_default()
+                .iter()
+                .map(|m| {
+                    let p = m.position();
+                    let s = m.size();
+                    (p.x, p.y, s.width, s.height)
+                })
+                .collect();
+            if crate::config::geometry_on_screen((x, y, width, height), &monitores) {
+                let _ = window.set_position(PhysicalPosition::new(x, y));
+            } else {
+                eprintln!(
+                    "wrusp: la ventana estaba en ({x}, {y}), que ya no cae en ninguna pantalla: se deja donde el sistema la ponga"
+                );
+            }
+        }
+    }
+    if geom.maximized {
+        let _ = window.maximize();
+    }
+    pedido
+}
+
 /// Crea la ventana y la vista de ajustes. El resto de vistas son perezosas.
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let window = WindowBuilder::new(app, MAIN_WINDOW)
         .title("Wrusp")
-        .inner_size(1100.0, 720.0)
+        .inner_size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
         .min_inner_size(640.0, 480.0)
         .build()?;
+
+    // Antes de medir nada: el tamaño con el que se reparte el espacio entre
+    // las vistas tiene que ser ya el definitivo.
+    app.manage(PendingGeometry {
+        pendiente: Mutex::new(None),
+        pedido: Mutex::new(None),
+    });
+    let recordada = app.state::<ConfigState>().0.lock().unwrap().window;
+    let pedido = restore_geometry(&window, recordada);
+    *app.state::<PendingGeometry>().pedido.lock().unwrap() = pedido;
+    start_geometry_writer(app);
 
     let size = window
         .inner_size()?
         .to_logical::<f64>(window.scale_factor()?);
     let handle = app.clone();
+    // El origen de la vista de ajustes lo decide Tauri y cambia con la
+    // plataforma (`tauri://localhost`, `http://tauri.localhost`…), así que no
+    // se escribe aquí: se aprende de la primera navegación, que es la carga de
+    // `index.html`, y a partir de ahí solo se admite ese mismo origen. Antes
+    // se admitía cualquier cosa que no fuera `wrusp://`, y esta vista es la
+    // única que tiene IPC de Tauri: una navegación a un sitio remoto la
+    // convertiría en un navegador con acceso a las órdenes (SEC-02).
+    let origen_propio: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
     let settings = WebviewBuilder::new(SETTINGS_VIEW, WebviewUrl::App("index.html".into()))
         .on_navigation(move |url| {
             if url.scheme() == "wrusp" {
                 handle_command(&handle, SETTINGS_VIEW, url);
                 return false;
             }
-            true
+            let suyo = (url.scheme().to_string(), url.host_str().map(str::to_string));
+            let mut propio = origen_propio.lock().unwrap();
+            match propio.as_ref() {
+                None => {
+                    *propio = Some(suyo);
+                    true
+                }
+                Some(esperado) if *esperado == suyo => true,
+                Some(_) => {
+                    eprintln!("wrusp: la vista de ajustes no navega fuera de su origen: {url}");
+                    // Un enlace del proyecto no se pierde: se abre fuera, como
+                    // hacen las vistas de cuenta. El resto, ni eso.
+                    if matches!(url.scheme(), "http" | "https") {
+                        crate::config::open_in_browser(url);
+                    }
+                    false
+                }
+            }
         })
         .initialization_script(aislado(rail::runtime_script(SETTINGS_VIEW)));
 
