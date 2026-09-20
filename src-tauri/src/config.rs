@@ -551,6 +551,13 @@ pub struct About {
     pub releases: String,
     pub issues: String,
     pub license: String,
+    /// Final del nombre del fichero que le sirve a este sistema, para que la
+    /// comprobación de actualizaciones ofrezca el paquete correcto y no una
+    /// lista de nueve. Ver `package_suffix`.
+    pub package_suffix: String,
+    /// Arquitectura de este binario (`x86_64`, `aarch64`…). Dos paquetes
+    /// pueden compartir extensión y diferenciarse solo en esto.
+    pub arch: String,
 }
 
 #[tauri::command]
@@ -561,8 +568,71 @@ pub fn get_about() -> About {
         releases: format!("{repo}/releases"),
         issues: format!("{repo}/issues"),
         license: format!("{repo}/blob/main/LICENSE"),
+        package_suffix: package_suffix().to_string(),
+        arch: std::env::consts::ARCH.to_string(),
         repository: repo,
     }
+}
+
+/// Qué paquete de los publicados le sirve a este sistema, por el final de su
+/// nombre (`Wrusp-0.4.17-1.x86_64.rpm` → `.rpm`).
+///
+/// Cada versión publica nueve ficheros y solo uno se instala aquí. Sin esto,
+/// ofrecer la descarga sería abrir la lista entera y que el usuario adivine.
+/// Si no se reconoce el sistema, no se adivina: quien pregunta se lleva la
+/// cadena vacía y ofrece la página de la versión, que los lista todos.
+#[cfg(target_os = "linux")]
+fn package_suffix() -> &'static str {
+    let os_release = fs::read_to_string("/etc/os-release").unwrap_or_default();
+    package_suffix_from(&os_release)
+}
+
+#[cfg(target_os = "windows")]
+fn package_suffix() -> &'static str {
+    "-setup.exe"
+}
+
+#[cfg(target_os = "macos")]
+fn package_suffix() -> &'static str {
+    ".dmg"
+}
+
+/// La familia de la distribución, leída de `/etc/os-release`.
+///
+/// `ID` es la distribución e `ID_LIKE` su familia (una lista separada por
+/// espacios): Ubuntu declara `ID=ubuntu` con `ID_LIKE=debian`, y así una
+/// derivada que nadie ha visto nunca cae en el paquete de su familia en vez
+/// de en el genérico. Los valores pueden venir entrecomillados.
+///
+/// El AppImage no es el último recurso por comodidad: es el único que funciona
+/// sin gestor de paquetes, así que es la respuesta correcta para lo que no se
+/// reconoce.
+#[cfg(target_os = "linux")]
+fn package_suffix_from(os_release: &str) -> &'static str {
+    let mut familias = Vec::new();
+    for linea in os_release.lines() {
+        let Some((clave, valor)) = linea.split_once('=') else {
+            continue;
+        };
+        let clave = clave.trim();
+        if clave != "ID" && clave != "ID_LIKE" {
+            continue;
+        }
+        let valor = valor.trim().trim_matches(['"', '\'']);
+        familias.extend(valor.split_whitespace().map(str::to_ascii_lowercase));
+    }
+    // El orden es el del fichero: primero `ID`, que es más específico que la
+    // familia, salvo que se hayan escrito al revés.
+    for familia in &familias {
+        match familia.as_str() {
+            "fedora" | "rhel" | "centos" | "almalinux" | "rocky" | "opensuse" | "suse"
+            | "mageia" => return ".rpm",
+            "debian" | "ubuntu" | "linuxmint" | "pop" | "raspbian" => return ".deb",
+            "arch" | "archlinux" | "manjaro" | "endeavouros" | "cachyos" => return ".pkg.tar.zst",
+            _ => {}
+        }
+    }
+    ".AppImage"
 }
 
 /// Programa que abre direcciones en cada sistema.
@@ -997,5 +1067,69 @@ mod tests {
             "…porque se apartó entero para poder recuperarlo"
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// El paquete que se ofrece al actualizar sale de `/etc/os-release`, y
+    /// equivocarse ahí es ofrecerle un `.deb` a quien usa Fedora.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn el_paquete_ofrecido_es_el_de_la_familia_de_la_distribucion() {
+        let casos = [
+            (
+                "ID=fedora\nVERSION_ID=44\n",
+                ".rpm",
+                "Fedora, el equipo de desarrollo",
+            ),
+            ("ID=debian\n", ".deb", "Debian"),
+            // Una derivada se reconoce por su familia, no por su nombre.
+            (
+                "ID=ubuntu\nID_LIKE=debian\n",
+                ".deb",
+                "Ubuntu declara su familia",
+            ),
+            (
+                "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+                ".rpm",
+                "los valores pueden venir entrecomillados y la familia traer varios",
+            ),
+            ("ID=manjaro\nID_LIKE=arch\n", ".pkg.tar.zst", "Manjaro"),
+            ("ID=arch\n", ".pkg.tar.zst", "Arch"),
+            // Sin familia conocida, el AppImage: es el único que no necesita
+            // gestor de paquetes.
+            (
+                "ID=void\n",
+                ".AppImage",
+                "una distribución que no está en la lista",
+            ),
+            ("", ".AppImage", "sin fichero que leer"),
+            (
+                "PRETTY_NAME=\"Algo\"\n# ID=fedora comentado\n",
+                ".AppImage",
+                "nada que parsear",
+            ),
+        ];
+        for (os_release, esperado, caso) in casos {
+            assert_eq!(package_suffix_from(os_release), esperado, "{caso}");
+        }
+    }
+
+    /// El nombre de los ficheros publicados tiene que seguir acabando como
+    /// dice `package_suffix`, o la descarga que se ofrece no existirá.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn los_sufijos_casan_con_los_nombres_que_publica_el_empaquetado() {
+        let publicados = [
+            "Wrusp-0.4.16-1.x86_64.rpm",
+            "Wrusp_0.4.16_amd64.deb",
+            "Wrusp-0.4.16-1-x86_64.pkg.tar.zst",
+            "Wrusp_0.4.16_amd64.AppImage",
+        ];
+        for sufijo in [".rpm", ".deb", ".pkg.tar.zst", ".AppImage"] {
+            let casan = publicados.iter().filter(|n| n.ends_with(sufijo)).count();
+            assert_eq!(
+                casan, 1,
+                "{sufijo} tiene que casar con un fichero y solo uno"
+            );
+        }
     }
 }

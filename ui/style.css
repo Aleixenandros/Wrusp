@@ -720,6 +720,55 @@ kbd {
   color: var(--danger);
 }
 
+/* Aviso de versión nueva. Sale del flujo de los botones de abajo porque
+   pregunta algo: se ve que hay que contestar. */
+.update-prompt {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.update-prompt[hidden] {
+  display: none;
+}
+
+.update-title {
+  font-weight: 600;
+}
+
+.update-prompt .hint {
+  margin-top: 6px;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  align-items: center;
+}
+
+.update-actions[hidden] {
+  display: none;
+}
+
+.update-actions button:not(.primary) {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.update-actions button:not(.primary):hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
 .about-links {
   display: flex;
   flex-wrap: wrap;

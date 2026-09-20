@@ -230,6 +230,17 @@
             Cliente de escritorio no oficial de WhatsApp, escrito en Rust con
             Tauri. No está afiliado ni respaldado por WhatsApp ni Meta.
           </p>
+          <!-- Aparece solo cuando hay una versión más nueva. Nada se descarga
+               sin que lo pidas aquí. -->
+          <div class="update-prompt" id="update-prompt" hidden>
+            <p class="update-title" id="update-title"></p>
+            <p class="hint" id="update-detail"></p>
+            <div class="update-actions">
+              <button type="button" id="update-download" class="primary">Descargar</button>
+              <button type="button" id="update-notes">Ver las novedades</button>
+              <button type="button" id="update-later">Ahora no</button>
+            </div>
+          </div>
           <div class="about-links">
             <button type="button" id="check-updates">Comprobar actualizaciones</button>
             <button type="button" data-link="repository">Código fuente</button>

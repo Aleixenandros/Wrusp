@@ -106,14 +106,19 @@ function renderIconGrid() {
 async function initIconPicker() {
   try {
     iconNames = await (await fetch("appicons/manifest.json")).json();
+    // El catálogo tiene que ser una lista. Si llega cualquier otra cosa,
+    // `renderIconGrid` revienta fuera de este try y se lleva por delante lo
+    // que el arranque hace después: carpetas, interruptores, «Acerca de» y
+    // diagnóstico se quedaban sin inicializar, en silencio.
+    if (!Array.isArray(iconNames)) throw new Error("el catálogo no es una lista");
     selectedIcon = await invoke("get_app_icon");
+    iconCurrent.src = `appicons/${selectedIcon}.svg`;
+    iconSearch.addEventListener("input", renderIconGrid);
+    renderIconGrid();
   } catch (err) {
+    iconNames = [];
     console.error("icon picker:", err);
-    return;
   }
-  iconCurrent.src = `appicons/${selectedIcon}.svg`;
-  iconSearch.addEventListener("input", renderIconGrid);
-  renderIconGrid();
 }
 
 // ── Carpetas (descargas y temporales) ───────────────────
@@ -232,6 +237,44 @@ function esMayor(a, b) {
   return false;
 }
 
+/** Arquitecturas y los nombres con que aparecen en los ficheros publicados. */
+const ARQUITECTURAS = {
+  x86_64: ["x86_64", "x64", "amd64"],
+  aarch64: ["aarch64", "arm64"],
+};
+
+/**
+ * El fichero de la versión que le sirve a este sistema, o null si no hay.
+ *
+ * `sufijo` lo decide Rust leyendo la distribución (ver `package_suffix`).
+ * Cada versión publica nueve ficheros y varios pueden compartir extensión
+ * entre arquitecturas, así que uno que anuncie una arquitectura distinta de
+ * la nuestra se descarta: es peor bajar el paquete equivocado que no bajar
+ * ninguno.
+ */
+function elegirPaquete(assets, sufijo, arquitectura) {
+  if (!sufijo) return null;
+  const mias = ARQUITECTURAS[arquitectura] || [];
+  const ajenas = Object.entries(ARQUITECTURAS)
+    .filter(([arch]) => arch !== arquitectura)
+    .flatMap(([, nombres]) => nombres);
+  const candidatos = assets.filter((a) => a.name && a.name.endsWith(sufijo));
+  const nombra = (nombre, lista) =>
+    lista.some((token) => nombre.toLowerCase().includes(token));
+  return (
+    candidatos.find((a) => nombra(a.name, mias)) ||
+    candidatos.find((a) => !nombra(a.name, ajenas)) ||
+    null
+  );
+}
+
+/** Tamaño en bytes como lo lee una persona. */
+function tamano(bytes) {
+  if (!bytes) return "tamaño desconocido";
+  const mib = bytes / (1024 * 1024);
+  return `${mib.toFixed(1).replace(".", ",")} MiB`;
+}
+
 async function initAbout() {
   let about;
   try {
@@ -251,9 +294,27 @@ async function initAbout() {
   }
 
   const estado = document.getElementById("about-update");
+  const prompt = document.getElementById("update-prompt");
+  const titulo = document.getElementById("update-title");
+  const detalle = document.getElementById("update-detail");
+  const botones = document.getElementById("update-download").parentElement;
+
+  const abrir = (url) =>
+    invoke("open_external", { url }).catch((err) => {
+      estado.textContent = "· no se pudo abrir el navegador";
+      estado.className = "about-update error";
+      console.error("open_external:", err);
+    });
+
+  document.getElementById("update-later").addEventListener("click", () => {
+    prompt.hidden = true;
+  });
+
   document.getElementById("check-updates").addEventListener("click", async () => {
     estado.textContent = "· comprobando…";
     estado.className = "about-update";
+    prompt.hidden = true;
+    botones.hidden = false;
     try {
       // Se consulta desde aquí y no desde Rust para no arrastrar un cliente
       // HTTP al binario solo para esto.
@@ -262,14 +323,33 @@ async function initAbout() {
         { headers: { Accept: "application/vnd.github+json" } }
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const ultima = (await r.json()).tag_name.replace(/^v/, "");
-      if (esMayor(ultima, about.version)) {
-        estado.textContent = `· hay una versión ${ultima}`;
-        estado.className = "about-update nueva";
-        estado.onclick = () => invoke("open_external", { url: about.releases });
-      } else {
+      const release = await r.json();
+      const ultima = release.tag_name.replace(/^v/, "");
+      if (!esMayor(ultima, about.version)) {
         estado.textContent = "· estás al día";
+        return;
       }
+      // Hay versión nueva: se avisa y se pregunta. La descarga no empieza
+      // sola, ni aquí ni en el navegador, hasta que se pulse «Descargar».
+      estado.textContent = `· hay una versión ${ultima}`;
+      estado.className = "about-update nueva";
+      const paquete = elegirPaquete(release.assets || [], about.packageSuffix, about.arch);
+      titulo.textContent = `Wrusp ${ultima} ya está disponible. ¿Quieres descargarla?`;
+      detalle.textContent = paquete
+        ? `Se descargará ${paquete.name} (${tamano(paquete.size)}), que es el paquete de este sistema. La descarga la hace tu navegador.`
+        : "No hay un paquete reconocible para este sistema, así que se abrirá la lista de descargas de la versión.";
+      const notas = release.html_url || about.releases;
+      document.getElementById("update-notes").onclick = () => abrir(notas);
+      document.getElementById("update-download").onclick = async () => {
+        await abrir(paquete ? paquete.browser_download_url : about.releases);
+        // La descarga vive ya en el navegador: aquí solo queda decir qué se
+        // ha pedido y cómo termina de instalarse.
+        botones.hidden = true;
+        detalle.textContent = paquete
+          ? `Descarga abierta en el navegador: ${paquete.name}. Cuando termine, ábrela para instalar la versión nueva.`
+          : "Se ha abierto en el navegador la lista de descargas de la versión.";
+      };
+      prompt.hidden = false;
     } catch (err) {
       estado.textContent = "· no se pudo comprobar";
       estado.className = "about-update error";

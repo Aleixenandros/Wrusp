@@ -4,6 +4,22 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.17] — 2026-09-20
+
+### Añadido
+
+- **Comprobar actualizaciones pregunta antes de descargar.** Si hay una versión más nueva, Wrusp lo dice y ofrece tres salidas: «Descargar», «Ver las novedades» y «Ahora no». Nada se descarga por su cuenta, y comprobar sigue sin abrir nada solo. La descarga que ofrece es el paquete que le sirve a tu sistema (`.rpm` en Fedora y familia, `.deb` en Debian y Ubuntu, `.pkg.tar.zst` en Arch, y el AppImage donde no haya gestor de paquetes conocido), no la lista de los nueve ficheros de cada versión; si para tu arquitectura no hay ese paquete, se abre la lista en vez de ofrecerte el equivocado. La descarga la hace tu navegador, como hasta ahora.
+
+### Corregido
+
+- **Un catálogo de iconos ilegible dejaba media pantalla de ajustes sin arrancar.** Si `appicons/manifest.json` no llegaba como una lista, el selector de iconos fallaba fuera de su red y se llevaba por delante, en silencio, todo lo que se inicializa después: carpetas, interruptores, «Acerca de» y diagnóstico. Ahora el fallo se queda en el selector de iconos. Lo encontró el banco nuevo.
+
+### Mantenimiento
+
+- **WhatsApp deja de anunciar su aplicación para Mac.** WebKitGTK le presentaba a WhatsApp un navegador Safari en un Mac, pasando por encima del que fija Wrusp, y WhatsApp obraba en consecuencia: anunciaba su aplicación de escritorio, esperaba la tecla Comando en los atajos y pintaba los emojis con la fuente del sistema en vez de con sus propias imágenes. Wrusp corrige ahora la plataforma que ve la página, y solo la plataforma.
+- **Bancos nuevos:** `banco_actualizacion`, que corre la página de ajustes de verdad contra una versión publicada real sin tocar la red, y `banco_disfraz`, que mide qué navegador ve una página cargada con la dirección de WhatsApp. Los dos cantan con la versión anterior.
+- Dependencias al día: `tauri-plugin-single-instance` 2.4.4, `uuid` 1.26.1 y `taiki-e/install-action` 2.87.13.
+
 ## [0.4.16] — 2026-09-11
 
 ### Corregido

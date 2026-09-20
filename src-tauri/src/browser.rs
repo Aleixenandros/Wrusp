@@ -1,29 +1,41 @@
 //! Disfraz de navegador para WhatsApp Web.
 //!
-//! El motor es WebKitGTK, o sea el mismo que Safari, y WhatsApp lo detecta
-//! aunque el user-agent diga Chrome. Comprobado empíricamente con un servidor
-//! local que registró lo que ve la página:
+//! El motor es WebKitGTK, o sea el mismo que Safari, y WhatsApp lo detecta.
+//! Lo que ve la página **depende del dominio**, y eso engañó a la primera
+//! medición (ADR-006, corregida en ADR-044). WebKitGTK trae «apaños por sitio»
+//! (`enable-site-specific-quirks`, activos por defecto) y `whatsapp.com` está
+//! en la lista de dominios a los que presenta el user-agent de Safari **en
+//! Mac**, por encima del que fije la aplicación. Medido con WebKitGTK 2.52.5 y
+//! el user-agent de Chrome que pone `shell.rs`:
 //!
 //! ```text
-//! userAgent : Mozilla/5.0 (X11; Linux x86_64) ... Chrome/131.0.0.0 Safari/537.36
-//! platform  : Linux x86_64
-//! vendor    : Apple Computer, Inc.     <-- delata a WebKit
-//! userAgentData : null                 <-- Chrome de verdad sí lo expone
+//! http://localhost/          (X11; Linux x86_64) … Chrome/131.0.0.0 Safari/537.36
+//! https://web.whatsapp.com/  (Macintosh; Intel Mac OS X 10_15) … Version/60.5 Safari/605.1.15
+//! vendor        : Apple Computer, Inc.   (en los dos)
+//! userAgentData : null                   (en los dos)
 //! ```
 //!
-//! Con `vendor` de Apple, WhatsApp concluye que estás en un equipo Apple y
-//! muestra el banner «Descarga WhatsApp para Mac». Este script se ejecuta
-//! antes que el código de la página y completa el disfraz que el user-agent
-//! ya empezaba.
+//! Un servidor local (`WRUSP_TEST_URL`) no reproduce ese apaño. Para medir lo
+//! que ve WhatsApp hay que cargar la página con su dirección base, que es lo
+//! que hace `cargo run --example banco_disfraz`.
+//!
+//! WhatsApp decide el sistema operativo leyendo esa cadena con `ua-parser-js`
+//! (módulo `WAWebUA` de su código público). Con «Mac OS» anuncia «WhatsApp
+//! para Mac», espera la tecla Comando en sus atajos y pinta los emojis con la
+//! fuente del sistema. El script de disfraz se ejecuta antes que el código de
+//! la página: corrige la plataforma de esa cadena y completa el resto.
 
 /// Versión de Chrome que decimos ser. Debe cuadrar con `CHROME_UA`.
 const CHROME_VERSION: &str = "131";
 
 /// Oculta la promoción de la app nativa («Descarga WhatsApp para Mac»).
 ///
-/// Corregir `navigator.vendor` quitó la detección de Safari, pero WhatsApp
-/// sigue anunciando su app de escritorio —en la bienvenida, junto al código QR
-/// y como ventana emergente—, y en Wrusp no tiene sentido.
+/// Desde el ADR-044 el anuncio se corta en origen: con la plataforma del
+/// user-agent corregida (`UA_PLATFORM_FIX`), WhatsApp no anuncia su app de
+/// escritorio en Linux. Este script queda como red de seguridad, por si alguna
+/// variante no pasa por esa comprobación o el motor cambia su apaño. Ojo: el
+/// anuncio nuevo de septiembre de 2026 abre la tienda con un botón y no con un
+/// enlace, así que la búsqueda por enlace ya no lo ve.
 ///
 /// Se busca por el enlace a la tienda y por el texto del anuncio, nunca por
 /// clases CSS (cambian en cada despliegue). Lo delicado es **hasta dónde** se
@@ -1130,18 +1142,56 @@ pub fn fix_large_mp4_blobs_script() -> String {
     String::new()
 }
 
-/// Completa el disfraz de Chrome que el user-agent empieza.
+/// Corrige la plataforma del user-agent que ve la página (ADR-044).
 ///
-/// El user-agent por sí solo no basta: WhatsApp mira además el objeto
-/// `navigator` y algunas señales que solo tiene Chrome. Con `vendor` de Apple
-/// y sin `window.chrome`, concluye que estás en Safari —o sea, en un Mac— y
-/// ofrece «WhatsApp para Mac» en la bienvenida, junto al código QR y en una
-/// ventana emergente.
+/// En `whatsapp.com`, WebKitGTK sustituye el user-agent de la aplicación por
+/// el de Safari en Mac (ver la cabecera del módulo). WhatsApp lee de ahí el
+/// sistema operativo, y con «Mac OS»:
 ///
-/// Además, en Linux las fuentes de emojis COLRv1 vectoriales no están totalmente
-/// soportadas por Cairo/WebKitGTK. Al disfrazar la plataforma como Windows,
-/// WhatsApp Web entrega su conjunto completo de imágenes/sprites de emojis
-/// (estilo Apple), asegurando que el 100% de los emojis se vean sin huecos en blanco.
+/// - anuncia su aplicación de escritorio en la bienvenida, bajo la lista de
+///   chats, en el menú, en los resultados de búsqueda y en los avisos de
+///   llamada. En su código público todas esas variantes pasan por la misma
+///   comprobación (`useWAWebDesktopUpsellPlatformAwareOsVersionCheck`), que
+///   devuelve falso si el sistema no es Windows ni Mac: con Linux no anuncia
+///   nada, y no hay nodo que esconder;
+/// - espera la tecla Comando en sus atajos de teclado en vez de Ctrl;
+/// - da por hecho que el sistema trae los emojis de Apple y no usa sus propias
+///   imágenes (`hasEmoji` en `WAWebUA`).
+///
+/// Solo se cambia la plataforma. El resto de la cadena se deja como la pone el
+/// motor: WhatsApp sigue viendo Safari, que es la identidad con la que ha
+/// funcionado siempre en Wrusp (vídeo incluido), y el servidor sigue
+/// recibiendo la cabecera que el motor decida. Si el motor deja algún día de
+/// sustituirla, la expresión no casa y esto no hace nada.
+#[cfg(target_os = "linux")]
+const UA_PLATFORM_FIX: &str = r"
+  const uaVisto = navigator.userAgent || '';
+  const PLATAFORMA_MAC = /\(Macintosh;[^)]*\)/;
+  if (PLATAFORMA_MAC.test(uaVisto)) {
+    const uaLinux = uaVisto.replace(PLATAFORMA_MAC, '(X11; Linux x86_64)');
+    enNavigator('userAgent', uaLinux);
+    enNavigator('appVersion', uaLinux.replace(/^Mozilla\//, ''));
+  }
+";
+
+/// Fuera de Linux no hay WebKitGTK ni apaño que corregir, y en macOS la
+/// plataforma «Macintosh» es la verdadera.
+#[cfg(not(target_os = "linux"))]
+const UA_PLATFORM_FIX: &str = "";
+
+/// Completa el disfraz de navegador que el user-agent empieza.
+///
+/// WhatsApp mira el user-agent, el objeto `navigator` y algunas señales que
+/// solo tiene Chrome. Lo primero que hace este script, en Linux, es corregir
+/// la plataforma del user-agent (ver `UA_PLATFORM_FIX`): es lo que decide si
+/// WhatsApp anuncia «WhatsApp para Mac». El resto rellena lo que WebKitGTK no
+/// trae (`vendor` de Google, `userAgentData`, `window.chrome`, complementos).
+///
+/// `navigator.platform` y `userAgentData.platform` dicen Windows desde la
+/// 0.4.1 (ADR-032), buscando el juego completo de emojis de WhatsApp. En su
+/// código público esa decisión sale de la cadena del user-agent y no de estos
+/// dos campos, así que quien la arregla es la corrección de plataforma. Se
+/// dejan como están: nada de lo leído depende de ellos.
 pub fn disguise_script() -> String {
     format!(
         r#"(function () {{
@@ -1151,7 +1201,7 @@ pub fn disguise_script() -> String {
     }} catch (e) {{ /* si la propiedad no es redefinible, se deja como está */ }}
   }};
   const enNavigator = (prop, value) => define(navigator, prop, value);
-
+{ua_fix}
   // El motivo de todo esto: WebKit responde "Apple Computer, Inc.".
   enNavigator('vendor', 'Google Inc.');
 
@@ -1244,6 +1294,7 @@ pub fn disguise_script() -> String {
   try {{ delete window.safari; }} catch (e) {{ /* no siempre es borrable */ }}
   if ('standalone' in navigator) enNavigator('standalone', undefined);
 }})();"#,
-        v = CHROME_VERSION
+        v = CHROME_VERSION,
+        ua_fix = UA_PLATFORM_FIX
     )
 }
