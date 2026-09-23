@@ -193,6 +193,9 @@ window.__TAURI__ = {{
 }};
 
 window.__wruspFaseAjustes = {fase_ajustes};
+// La orden de «+» que Rust manda a una vista de ajustes recién creada llega
+// antes que `main.js` y solo deja esta marca (ADR-047).
+window.__wruspQuiereAlta = {fase_ajustes};
 
 // La versión publicada, sin salir a la red. Cualquier otra dirección es un
 // fallo: la página no debería pedir nada más.
@@ -246,6 +249,14 @@ const visible = (id) => {{
 const ESPERADA = '{esperada}';
 const HAY_VERSION = ESPERADA !== '';
 
+// Justo tras `main.js`, antes de tocar nada: si llegó la marca de alta, el
+// panel de cuentas tiene que estar delante y el campo del nombre, enfocado.
+const altaAlArrancar = {{
+  panel: visible('panel-cuentas'),
+  foco: document.activeElement ? document.activeElement.id : '',
+  marca: window.__wruspQuiereAlta,
+}};
+
 // Segunda fase: lo que la página de ajustes hace por su cuenta. Solo se
 // ejercita en un caso; los demás miran la comprobación de versiones.
 function faseAjustes(pruebas, estado, urls) {{
@@ -253,6 +264,10 @@ function faseAjustes(pruebas, estado, urls) {{
   // Que la cadena de arranque llegó al final: `refresh()` es lo último, y
   // pide las cuentas. Si un eslabón revienta, esto no está (ADR-045).
   pruebas.push(['el arranque de la página llega hasta el final', pedidas().includes('list_accounts')]);
+  pruebas.push([
+    'la orden de añadir cuenta que llega antes que la página se atiende al arrancar',
+    altaAlArrancar.panel && altaAlArrancar.foco === 'add-name' && altaAlArrancar.marca === false,
+  ]);
 
   // Los interruptores son interruptores, no casillas del navegador. Hay que
   // abrir su panel: lo que está oculto no tiene medidas que mirar.

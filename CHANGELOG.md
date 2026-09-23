@@ -4,6 +4,26 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.19] — 2026-09-23
+
+### Corregido
+
+- **Mayús+N vuelve a escribir una N mayúscula.** Desde la 0.4.17 abría «Nuevo chat»: al ver a Wrusp como Safari en Linux, WhatsApp deja ese atajo sin tecla modificadora, una combinación que su código no esperaba. «Nuevo chat» pasa a ser Ctrl+Alt+N, como en WhatsApp Web en Linux y en Windows; en su lista de atajos WhatsApp lo seguirá mostrando como «N».
+- **Los atajos de Wrusp ya no se quedan con los de WhatsApp.** Ctrl+Alt+P (perfil), Ctrl+Alt+Mayús+U (marcar como no leído) y Ctrl+Alt+Tab (chat siguiente) hacían además lo de Wrusp: abrir los ajustes, añadir una cuenta o cambiar de cuenta. Y Ctrl++, el zoom de Wrusp, le llegaba también a WhatsApp, que en Linux lo tiene como su propio atajo de ampliar. Los atajos de Wrusp son ahora Ctrl y una tecla, sin Alt, y lo que atiende Wrusp ya no le llega a WhatsApp.
+- **Entrar en un chat con muchos vídeos y GIF ya no hace crecer la memoria hasta colgar la aplicación.** Un vídeo que salía de la pantalla conservaba su reproductor, con varias copias del fichero dentro, hasta que el motor decidía limpiar, cosa que podía no pasar en toda la sesión: la tarde del cuelgue, Wrusp llegó a 4 GB más otros 4 de swap. Ahora el reproductor de un vídeo que sale del chat se desmonta a los pocos segundos y, si el vídeo vuelve, se recupera solo.
+
+### Cambiado
+
+- **Wrusp ocupa la mitad de memoria en un chat con muchos vídeos y fotos.** Además de lo anterior, los procesos de las páginas devuelven al sistema la memoria que sueltan, y el contenido se pinta con el procesador en lugar de con la gráfica. Con la gráfica, cada imagen que pasaba por la pantalla se quedaba como textura para siempre: en un equipo con gráfica integrada eso es memoria normal, solo que no aparece en el monitor del sistema como memoria de Wrusp, y en una cuenta con mucho uso pasaba de 1 GB a los cuarenta minutos. En la prueba de un chat con 12 GIF, un vídeo y 300 fotos, al salir del chat Wrusp ocupa unos 580 MB, frente a 1,14 GB en la 0.4.18. A cambio, pintar fotos nuevas cuesta algo más de procesador; quien prefiera la gráfica puede arrancar Wrusp con `WEBKIT_SKIA_ENABLE_CPU_RENDERING=0`.
+- **Menos procesador y audio en reposo.** WhatsApp crea al arrancar un contexto de audio que no usa, y WebKitGTK lo dejaba en marcha mandando silencio sin parar: era la mitad del procesador que gastaba cada cuenta sin hacer nada, y mantenía abierto un flujo de sonido que no dejaba descansar el audio del equipo, auriculares Bluetooth incluidos. Ahora nace suspendido, como en Chrome y en Safari, y WhatsApp lo pone en marcha cuando de verdad va a sonar algo.
+- **La pantalla de Ajustes solo ocupa memoria mientras se usa.** Antes se quedaba abierta, oculta, toda la sesión (unos 200 MB entre su proceso, su memoria gráfica y su proceso de red); ahora se abre al entrar en ella y se cierra sola un minuto después de salir.
+
+### Mantenimiento
+
+- **El registro deja de llenarse de errores de seguridad de contenido.** Cada aviso interno de una cuenta (contador de no leídos, notas del vídeo) chocaba con la política de WhatsApp y dejaba una línea de error; era casi todo lo que se escribía en él.
+- **Los programas que abre Wrusp ya no heredan sus ajustes internos.** Si el navegador o el gestor de ficheros no estaban abiertos, arrancaban con los ajustes de vídeo y de memoria pensados para el motor de Wrusp.
+- **Bancos de pruebas nuevos**: `banco_chat_videos` mide memoria, memoria gráfica, procesador y bloqueos en un chat con vídeos y fotos, y compara variantes y versiones; `banco_audio` comprueba que el audio de WhatsApp no se queda sonando. `banco_disfraz` prueba ahora el teclado, y `banco_rendimiento` vuelve a medir el disfraz de verdad (desde la 0.4.17 medía uno que fallaba al arrancar).
+
 ## [0.4.18] — 2026-09-20
 
 ### Añadido

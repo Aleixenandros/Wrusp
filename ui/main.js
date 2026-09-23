@@ -766,8 +766,11 @@ function initDiagnostics() {
 }
 
 // Lo llama Rust cuando se pulsa «+» en la barra lateral. El campo puede estar
-// en un panel que no se ve, así que primero se enseña el suyo.
+// en un panel que no se ve, así que primero se enseña el suyo. Si la vista se
+// acaba de crear, la orden llega antes que este script y solo deja la marca
+// `__wruspQuiereAlta`, que se atiende al arrancar (ver `init`).
 window.__wruspFocusAdd = () => {
+  window.__wruspQuiereAlta = false;
   showPanel("cuentas");
   nameEl.focus();
   nameEl.select();
@@ -795,6 +798,7 @@ formEl.addEventListener("submit", async (ev) => {
     recordado = null;
   }
   showPanel(recordado || PANEL_POR_DEFECTO);
+  if (window.__wruspQuiereAlta) window.__wruspFocusAdd();
 
   try {
     themeMode = await invoke("get_theme");

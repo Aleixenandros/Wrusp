@@ -1040,6 +1040,53 @@ const GIF_SIN_CAMBIO: &str = r#"
 </script>
 "#;
 
+/// Maqueta 14 — un GIF que sale del documento suelta su reproductor al rato y
+/// lo recupera al volver (ADR-047). Hasta la 0.4.18, un vídeo fuera del
+/// documento conservaba su pipeline, sus hilos y las copias de su `data:`
+/// hasta que pasaba el recolector, y una sesión larga recorriendo chats con
+/// GIF acumulaba gigas. Uno que solo cambia de sitio —sale y entra en la misma
+/// pasada— no se toca, y la página sigue leyendo en `src` el blob que puso.
+const GIF_FUERA_Y_VUELTA: &str = r#"
+<div id="caja"><video id="v" autoplay muted loop playsinline style="width:320px"></video></div>
+<div id="otra"></div>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const espera = (ms) => new Promise((l) => setTimeout(l, ms));
+    const conData = (v) => (v.getAttribute('src') || '').startsWith('data:');
+    const v = document.getElementById('v');
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    v.src = url;
+    await espera(2500);
+    const arranco = !v.paused && v.currentTime > 0.3 && conData(v);
+    // Cambio de sitio: sale y entra en la misma operación.
+    document.getElementById('otra').appendChild(v);
+    await espera(5000);
+    const trasMover = conData(v) && !v.paused;
+    // Baja de verdad, más tiempo del que tarda en desmontarse.
+    v.remove();
+    await espera(5500);
+    const desmontado = v.getAttribute('src') === null;
+    const laPaginaVe = v.src === url;
+    const cuenta = window.__wruspDesmontados || 0;
+    document.getElementById('caja').appendChild(v);
+    await espera(3000);
+    const vuelve = !v.paused && v.currentTime > 0.3 && conData(v);
+    informe([
+      ['el GIF arranca con su data:', arranco],
+      ['cambiarlo de sitio no lo desmonta', trasMover],
+      ['fuera del documento, su reproductor se desmonta', desmontado && cuenta >= 1],
+      ['la página sigue viendo el blob que puso', laPaginaVe],
+      ['al volver recupera la fuente y se reproduce', vuelve],
+      ['sin errores de medio', !v.error],
+    ], 'desmontados ' + cuenta);
+  })();
+</script>
+"#;
+
 /// Maqueta 12 — la sonda con la que WhatsApp mide un vídeo (`MediaLoad`, en
 /// su código público, copiada paso a paso): un <video> suelto, fuera del
 /// documento, con `crossOrigin`, el blob, `load()` y `currentTime = 1`; espera
@@ -1322,6 +1369,11 @@ fn main() {
             correr(
                 "Un GIF recibe su fuente una sola vez",
                 &GIF_SIN_CAMBIO.replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
+            correr(
+                "Un GIF fuera del documento suelta su reproductor y lo recupera al volver",
+                &GIF_FUERA_Y_VUELTA.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
             correr(

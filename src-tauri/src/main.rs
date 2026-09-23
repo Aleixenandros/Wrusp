@@ -50,13 +50,9 @@ use tauri::{Manager, RunEvent, WindowEvent};
 /// Si el usuario ya trae su propia preferencia en el entorno, se respeta: puede
 /// querer justo lo contrario.
 fn preferir_decodificacion_por_software() {
-    const VARIABLE: &str = "GST_PLUGIN_FEATURE_RANK";
-    if std::env::var_os(VARIABLE).is_some() {
-        return;
-    }
     // `lp` es la variante de bajo consumo, y `vaapi*` el plugin antiguo.
-    std::env::set_var(
-        VARIABLE,
+    config::fijar_para_el_motor(
+        "GST_PLUGIN_FEATURE_RANK",
         "vah264dec:0,vah264lpdec:0,vaapih264dec:0,vaapidecodebin:0",
     );
 }
@@ -74,10 +70,59 @@ fn preferir_decodificacion_por_software() {
 /// 345 fallos en 345 fotogramas con GL; 354/354 fotogramas y cero fallos con
 /// el sink normal. `requestVideoFrameCallback` sigue disparando.
 fn evitar_sink_gl_de_video() {
-    const VARIABLE: &str = "WEBKIT_GST_DISABLE_GL_SINK";
-    if std::env::var_os(VARIABLE).is_none() {
-        std::env::set_var(VARIABLE, "1");
+    config::fijar_para_el_motor("WEBKIT_GST_DISABLE_GL_SINK", "1");
+}
+
+/// Hace que los procesos web devuelvan al sistema la memoria que sueltan.
+///
+/// El `malloc` de glibc sube su umbral de `mmap` cada vez que libera un bloque
+/// grande, hasta 32 MB: a partir de ahí, las URI de vídeo de varios megas que
+/// copia GStreamer, sus búferes y los ficheros decodificados salen del montón
+/// y, al liberarse, se quedan en él. Con un hilo por elemento de cada pipeline
+/// (más de doscientos en un chat con GIF), cada hilo acaba además con su propia
+/// arena. Medido en `banco_chat_videos` al salir de un chat con 12 GIF y un
+/// vídeo (ADR-047): el montón se queda en 38 MB en vez de 91, y el proceso web
+/// en 331 MB en vez de 449, sin más CPU en él.
+///
+/// Fijar el umbral apaga ese ajuste dinámico. Solo para los procesos que
+/// lance el motor: glibc lee estas variables al arrancar cada proceso, así que
+/// el de la interfaz, ya en marcha, no se entera, y es lo que se busca. En el
+/// banco, con ellas puestas también en la interfaz, esta gastaba el doble de
+/// CPU al componer. Si el usuario trae las suyas, se respetan.
+fn devolver_memoria_en_los_procesos_web() {
+    for (variable, valor) in [
+        ("MALLOC_ARENA_MAX", "2"),
+        ("MALLOC_MMAP_THRESHOLD_", "131072"),
+        ("MALLOC_TRIM_THRESHOLD_", "131072"),
+    ] {
+        config::fijar_para_el_motor(variable, valor);
     }
+}
+
+/// Pinta el contenido de las páginas con la CPU; la GPU sigue componiendo.
+///
+/// Con el pintado por GPU (el de fábrica en WebKitGTK 2.52), cada imagen que
+/// pasa por la pantalla —fotos, miniaturas, stickers, avatares— acaba como
+/// textura en la caché de Skia, y esa caché no se vacía: tiene un presupuesto
+/// por hilo de pintado y nada en WebKit la recorta. En la instalación del
+/// usuario, el proceso web de una cuenta llevaba 1,19 GB de memoria gráfica a
+/// los cuarenta minutos, y creciendo. En este equipo la gráfica va integrada
+/// en el procesador, así que esa memoria es RAM, solo que fuera del RSS.
+///
+/// Medido en `banco_chat_videos` recorriendo 300 fotos distintas (ADR-047):
+/// con GPU la memoria gráfica sube de 94 a 449 MB y ahí se queda al salir del
+/// chat; con CPU se queda en 51 MB. A cambio, unos 36 MB más de RSS y algo
+/// más de CPU mientras se pintan fotos nuevas, repartida en hilos de pintado:
+/// el peor bloqueo de la página es el mismo (67 ms). Los GIF y los vídeos no
+/// se pintan, se componen, y cuestan lo mismo; `requestVideoFrameCallback`,
+/// del que depende el reproductor de WhatsApp, entrega los mismos fotogramas.
+///
+/// El MSAA de 8 muestras que usa el pintado por GPU en x86_64 no era el
+/// culpable: bajarlo a 0 o a 4 no movió la memoria gráfica ni en el banco ni
+/// en la app. Quien prefiera la GPU puede arrancar con
+/// `WEBKIT_SKIA_ENABLE_CPU_RENDERING=0`, que WebKit entiende y aquí se respeta.
+fn pintar_con_la_cpu() {
+    config::fijar_para_el_motor("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1");
 }
 
 fn main() {
@@ -98,6 +143,14 @@ fn main() {
 
     // Entrega de fotogramas por memoria normal (ver la función).
     evitar_sink_gl_de_video();
+
+    // Memoria liberada que vuelve al sistema en los procesos web (ver la
+    // función). Antes de que el motor lance ninguno.
+    devolver_memoria_en_los_procesos_web();
+
+    // Pintado por CPU: la caché de texturas del de GPU no se vacía nunca
+    // (ver la función).
+    pintar_con_la_cpu();
 
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.

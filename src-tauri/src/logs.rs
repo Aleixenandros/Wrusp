@@ -61,9 +61,7 @@ pub fn init() {
     // GStreamer callado por defecto. Con `1` seguía escupiendo miles de líneas
     // por segundo cuando un vídeo llega corrupto, y eso es E/S y trabajo que
     // no ayudan a nadie. Para diagnosticar, `GST_DEBUG=2 wrusp` desde consola.
-    if std::env::var_os("GST_DEBUG").is_none() {
-        std::env::set_var("GST_DEBUG", "0");
-    }
+    crate::config::fijar_para_el_motor("GST_DEBUG", "0");
     redirect(&path);
 }
 

@@ -22,6 +22,13 @@
 use gtk::prelude::*;
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
+// Los scripts de `browser.rs` se llaman tal cual: sacarlos de la fuente como
+// texto dejaba sin sustituir los argumentos de su `format!` (`{ua_fix}` desde
+// la 0.4.17), y el banco medía un disfraz que fallaba al arrancar.
+#[allow(dead_code)]
+#[path = "../src/browser.rs"]
+mod browser;
+
 /// Extrae el primer literal `r#"…"#` que sigue a `firma` en `fuente`.
 fn literal(fuente: &str, firma: &str) -> String {
     let inicio = fuente
@@ -44,27 +51,15 @@ fn sin_escapar(s: &str) -> String {
 /// Los scripts tal cual los inyecta Wrusp, sacados de su propia fuente para
 /// que el banco no pueda quedarse midiendo una copia vieja.
 fn scripts() -> Vec<(&'static str, String)> {
-    let browser = include_str!("../src/browser.rs");
     let rail = include_str!("../src/rail.rs");
     let filedrop = include_str!("../src/filedrop.rs");
     let clipboard = include_str!("../src/clipboard.rs");
     vec![
-        (
-            "disfraz",
-            sin_escapar(&literal(browser, "pub fn disguise_script()").replace("{v}", "131")),
-        ),
-        (
-            "webcodecs",
-            literal(browser, "pub fn hide_webcodecs_script()"),
-        ),
-        (
-            "video",
-            literal(browser, "pub fn fix_large_mp4_blobs_script() -> String {"),
-        ),
-        (
-            "promo",
-            literal(browser, "pub fn hide_native_app_promo_script()"),
-        ),
+        ("disfraz", browser::disguise_script()),
+        ("webcodecs", browser::hide_webcodecs_script()),
+        ("video", browser::fix_large_mp4_blobs_script()),
+        ("audio", browser::quiet_idle_audio_script()),
+        ("promo", browser::hide_native_app_promo_script()),
         (
             "barra",
             sin_escapar(&literal(rail, "pub fn runtime_script(").replace("{own}", "\"cuenta\"")),

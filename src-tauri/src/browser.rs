@@ -578,8 +578,15 @@ pub fn fix_large_mp4_blobs_script() -> String {
   const MIN_SIN_TIPO = 64 * 1024;
   // Copias `data:` sin elemento conectado que se guardan por si vuelven a
   // hacer falta. Las que están puestas en un elemento no se sueltan: viven lo
-  // que viva él. La copia cuesta cuatro tercios del fichero.
-  const MAX_COPIAS = 4;
+  // que viva él. La copia cuesta cuatro tercios del fichero, y el motor hace
+  // las suyas (ver «Reproductores fuera del documento»).
+  const MAX_COPIAS = 2;
+  // Cuánto espera un vídeo fuera del documento antes de que se desmonte su
+  // reproductor: lo justo para no confundir un cambio de sitio con una baja.
+  // El que recibió su fuente sin haber entrado nunca espera más: puede ser la
+  // sonda de WhatsApp, que tarda hasta 20 s en darse por vencida.
+  const APARCAR_TRAS = 4000;
+  const APARCAR_SIN_ENTRAR_TRAS = 30000;
   // Por encima de esto el vídeo va como blob: la copia ocuparía cuatro
   // tercios del fichero en la página más lo que el motor decodifique.
   const MAX_DATA = 64 * 1024 * 1024;
@@ -886,10 +893,13 @@ pub fn fix_large_mp4_blobs_script() -> String {
         // Revocada sin copia: WhatsApp ya no quiere ese vídeo.
         if (definitiva === url && !candidatos.has(url)) return;
         ponerUrl(nodo, definitiva, definitiva !== url ? url : null);
+        const medio = medioDe(nodo);
+        // Entregada a un elemento que no está en el documento: si no llega a
+        // entrar, su reproductor no debe quedarse vivo hasta el recolector.
+        if (medio === nodo && !nodo.isConnected) vigilarFuera(nodo, APARCAR_SIN_ENTRAR_TRAS);
         // Un <source> no carga nada por sí solo: el medio elige fuente al
         // cargar. Solo si nunca eligió ninguna ni ha fallado, que entonces no
         // hay reproductor que destruir.
-        const medio = medioDe(nodo);
         if (medio && medio !== nodo && !medio.error
           && (medio.networkState === HTMLMediaElement.NETWORK_EMPTY
             || medio.networkState === HTMLMediaElement.NETWORK_NO_SOURCE)) {
@@ -908,6 +918,87 @@ pub fn fix_large_mp4_blobs_script() -> String {
     for (const fuente of medio.querySelectorAll('source'))
       if (retenidaDe(fuente) !== undefined) pendientes.push(entregar(fuente, pedida));
     return pendientes;
+  }
+
+  // ── Reproductores fuera del documento ────────────────────────────────────
+  // Un <video> que sale del documento se pausa, pero conserva su reproductor
+  // hasta que el recolector destruye el elemento: el pipeline de GStreamer
+  // con sus hilos y búferes y, si su fuente es una `data:`, las copias que el
+  // motor hace de ella (la del atributo, la del reproductor, las de cada
+  // elemento de GStreamer que guarda la URI y el fichero decodificado). En el
+  // banco `banco_chat_videos`, medir y reproducir un vídeo de 12 MB sube el
+  // proceso web 250 MB, y salir del chat no liberaba nada: el recolector no
+  // tiene prisa, porque para él un <video> es un objeto pequeño. En uso real,
+  // una tarde recorriendo chats con GIF llegó a 4 GB y otros tantos de swap
+  // (ADR-047).
+  //
+  // Así que, cuando un vídeo al que Wrusp entregó la fuente lleva un rato
+  // fuera, se desmonta su reproductor y se le deja la fuente **retenida**,
+  // como si WhatsApp acabara de asignarla: si vuelve al documento se le
+  // entrega otra vez (al reproducirse, o enseguida si es un GIF), y la página
+  // sigue leyendo en `src` el blob que puso.
+  //
+  // Desmontar es cambiar la fuente, justo lo que el ADR-043 prohíbe hacer
+  // sobre un reproductor que acaba de fallar: ese desmontaje se quedó
+  // esperando un cerrojo de GStreamer con el pipeline a medio *preroll*. Por
+  // eso solo se toca un reproductor sano y quieto —sin error, sin búsqueda en
+  // curso y con imagen ya decodificada— que es el mismo desmontaje que haría
+  // el recolector. Los demás se le quedan a él, como hasta ahora.
+  const fuera = new Map(); // medio → instante a partir del cual se desmonta
+  let barrido = 0;
+  let desmontados = 0;
+
+  function vigilarFuera(medio, espera) {
+    if (!(medio instanceof HTMLVideoElement) || !medio.__wruspOrigen) return;
+    fuera.set(medio, performance.now() + espera);
+    if (!barrido) barrido = setTimeout(barrer, espera + 50);
+  }
+
+  function barrer() {
+    barrido = 0;
+    const ahora = performance.now();
+    let proximo = Infinity;
+    for (const [medio, cuando] of fuera) {
+      if (medio.isConnected) {
+        fuera.delete(medio);
+      } else if (cuando > ahora) {
+        proximo = Math.min(proximo, cuando);
+      } else {
+        fuera.delete(medio);
+        desmontar(medio);
+      }
+    }
+    if (proximo !== Infinity) barrido = setTimeout(barrer, proximo - ahora + 50);
+  }
+
+  function desmontar(medio) {
+    const origen = medio.__wruspOrigen;
+    if (!origen || medio.isConnected || medio.querySelector('source[src]')) return;
+    if (medio.error || medio.seeking || medio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    try { if (!medio.paused) medio.pause(); } catch (e) { /* el medio ya no está */ }
+    olvidarMarca(medio);
+    quitarAtributo.call(medio, 'src');
+    // Sin fuente, `load()` deja el motor vacío sin disparar `error` (ver `relevar`).
+    try { cargarNativo.call(medio); } catch (e) { /* el medio ya no está */ }
+    medio.__wruspRetenida = origen;
+    // Y la copia de Wrusp, si ya nadie la lleva puesta: volver a leer el blob
+    // cuesta unas decenas de milisegundos.
+    if (!enUso(origen)) {
+      soltarCopia(origen);
+      const i = conCopia.indexOf(origen);
+      if (i >= 0) conCopia.splice(i, 1);
+    }
+    desmontados++;
+    window.__wruspDesmontados = desmontados; // lo lee el banco
+    if (desmontados === 1 || desmontados % 25 === 0)
+      anotar('reproductores fuera del documento desmontados: ' + desmontados);
+  }
+
+  // Vuelve al documento uno que se desmontó: un GIF necesita su fuente ya.
+  function devolver(medio) {
+    if (retenidaDe(medio) === undefined || tieneFuenteReal(medio)) return;
+    vigilarVisibilidad(medio);
+    if (medio.autoplay) entregarTodas(medio, false);
   }
 
   // ── Fallos: se anotan y no se tocan ──────────────────────────────────────
@@ -1114,16 +1205,25 @@ pub fn fix_large_mp4_blobs_script() -> String {
   // Los que llegan al documento con la fuente ya puesta (el analizador de HTML
   // no pasa por `setAttribute`): esos no se pueden retener, solo vigilar. Los
   // que se van, se dejan de observar.
+  // Un solo recorrido por subárbol: WhatsApp mete miles de nodos al pintar.
+  const MEDIOS_QUE_ENTRAN = 'video, audio[src], source[src]';
+  function visitarQueEntra(nodo) {
+    if (nodo.hasAttribute('src')) registrar(nodo);
+    // Sin fuente: puede ser uno que se desmontó fuera del documento y vuelve.
+    else if (nodo instanceof HTMLVideoElement) devolver(nodo);
+  }
   function registrarArbol(raiz) {
     if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
-    if (raiz.matches('video[src], audio[src], source[src]')) registrar(raiz);
-    for (const nodo of raiz.querySelectorAll('video[src], audio[src], source[src]'))
-      registrar(nodo);
+    if (raiz.matches(MEDIOS_QUE_ENTRAN)) visitarQueEntra(raiz);
+    for (const nodo of raiz.querySelectorAll(MEDIOS_QUE_ENTRAN)) visitarQueEntra(nodo);
   }
   function olvidarArbol(raiz) {
-    if (!visorInterseccion || !raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
-    if (raiz instanceof HTMLVideoElement) visorInterseccion.unobserve(raiz);
-    for (const nodo of raiz.querySelectorAll('video')) visorInterseccion.unobserve(nodo);
+    if (!raiz || raiz.nodeType !== Node.ELEMENT_NODE) return;
+    const videos = raiz instanceof HTMLVideoElement ? [raiz] : raiz.querySelectorAll('video');
+    for (const video of videos) {
+      if (visorInterseccion) visorInterseccion.unobserve(video);
+      vigilarFuera(video, APARCAR_TRAS);
+    }
   }
 
   new MutationObserver((mutaciones) => {
@@ -1139,6 +1239,71 @@ pub fn fix_large_mp4_blobs_script() -> String {
 /// Fuera de Linux el motor sirve los blobs de vídeo por su cuenta.
 #[cfg(not(target_os = "linux"))]
 pub fn fix_large_mp4_blobs_script() -> String {
+    String::new()
+}
+
+/// Un `AudioContext` creado sin gesto del usuario nace suspendido, como en
+/// Chrome y en Safari.
+///
+/// El bundle principal de WhatsApp trae al principio un *polyfill* de Web
+/// Audio que, al cargar la página, hace `new AudioContext` para mirar qué
+/// métodos tiene el prototipo, y lo abandona sin cerrarlo. En Chrome y en
+/// Safari ese contexto nace suspendido, porque ningún gesto del usuario lo ha
+/// autorizado, y no cuesta nada. WebKitGTK no aplica esa política: el contexto
+/// arranca, y un contexto en marcha no se recoge nunca. En la instalación del
+/// usuario cada cuenta tenía un flujo «Playback Stream» abierto en PipeWire
+/// mandando silencio sin parar: la mitad de la CPU del proceso web en reposo,
+/// el grafo de audio siempre despierto y los auriculares Bluetooth sin poder
+/// descansar (ADR-047).
+///
+/// Aquí se aplica esa misma política: un contexto creado sin activación del
+/// usuario se suspende nada más nacer. El código de WhatsApp está escrito para
+/// ella, porque es la de los navegadores que admite, y llama a `resume()`
+/// cuando de verdad va a sonar; `resume()` no se toca. Decodificar
+/// (`decodeAudioData`, que es lo que hace con las notas de voz para Safari)
+/// funciona igual con el contexto suspendido.
+///
+/// Solo en Linux: en Windows y en macOS el motor ya aplica su política.
+#[cfg(target_os = "linux")]
+pub fn quiet_idle_audio_script() -> String {
+    r#"(function () {
+  const Nativo = window.AudioContext;
+  if (typeof Nativo !== 'function') return;
+  const suspender = Nativo.prototype.suspend;
+
+  // Activación del usuario: la del motor si la expone, y si no, un gesto de
+  // verdad en los últimos cinco segundos, que es lo que dura en Chrome.
+  let ultimoGesto = -Infinity;
+  for (const tipo of ['pointerdown', 'mousedown', 'keydown', 'touchend', 'click']) {
+    addEventListener(tipo, (e) => { if (e.isTrusted) ultimoGesto = performance.now(); }, true);
+  }
+  const hayGesto = () => {
+    const activacion = navigator.userActivation;
+    if (activacion && typeof activacion.isActive === 'boolean') return activacion.isActive;
+    return performance.now() - ultimoGesto < 5000;
+  };
+
+  const conPolitica = new Proxy(Nativo, {
+    construct(objetivo, argumentos, nuevo) {
+      const contexto = Reflect.construct(objetivo, argumentos, nuevo);
+      if (!hayGesto()) {
+        try {
+          const p = suspender.call(contexto);
+          if (p && p.catch) p.catch(() => {});
+        } catch (e) { /* si no se deja, se queda como el motor diga */ }
+      }
+      return contexto;
+    },
+  });
+  window.AudioContext = conPolitica;
+  if (window.webkitAudioContext === Nativo) window.webkitAudioContext = conPolitica;
+})();"#
+        .to_string()
+}
+
+/// Fuera de Linux el motor ya aplica su política de reproducción automática.
+#[cfg(not(target_os = "linux"))]
+pub fn quiet_idle_audio_script() -> String {
     String::new()
 }
 
@@ -1163,6 +1328,27 @@ pub fn fix_large_mp4_blobs_script() -> String {
 /// funcionado siempre en Wrusp (vídeo incluido), y el servidor sigue
 /// recibiendo la cabecera que el motor decida. Si el motor deja algún día de
 /// sustituirla, la expresión no casa y esto no hace nada.
+///
+/// **El atajo de «Nuevo chat» (ADR-047).** «Safari fuera de Mac» es una
+/// combinación que WhatsApp no espera. Su tabla de atajos
+/// (`WAWebKeyboardShortcuts`) le da a Safari «Nuevo chat» con la tecla `N`
+/// mayúscula y Control en Mac, pero **sin ningún modificador** en el resto de
+/// sistemas: con la plataforma corregida, Mayús+N abría un chat nuevo y no
+/// había forma de escribir una N mayúscula. Pasado por su comparador real:
+///
+/// ```text
+///                        Mayús+N         Ctrl+Alt+N     su lista dice
+/// Safari en Linux        Nuevo chat      nada           «N»
+/// Safari en Mac          nada            nada           Ctrl+Mayús+N
+/// Chrome en Linux        nada            Nuevo chat     Ctrl+Alt+N
+/// ```
+///
+/// Así que, solo cuando se ha corregido la plataforma, se escucha el teclado
+/// antes que WhatsApp: a Mayús+N se le oculta la mayúscula al comparador (el
+/// carácter lo escribe el motor igual, porque eso no depende de lo que lea la
+/// página) y Ctrl+Alt+N, el atajo de WhatsApp en Linux y en Windows, se le
+/// presenta como la combinación que su tabla espera para Safari. El resto de
+/// sus atajos ya son los de Linux, con Ctrl+Alt.
 #[cfg(target_os = "linux")]
 const UA_PLATFORM_FIX: &str = r"
   const uaVisto = navigator.userAgent || '';
@@ -1171,6 +1357,29 @@ const UA_PLATFORM_FIX: &str = r"
     const uaLinux = uaVisto.replace(PLATAFORMA_MAC, '(X11; Linux x86_64)');
     enNavigator('userAgent', uaLinux);
     enNavigator('appVersion', uaLinux.replace(/^Mozilla\//, ''));
+
+    // Lo que lee el comparador de WhatsApp se cambia en el propio evento, que
+    // sigue su camino: el motor escribe la letra según la tecla de verdad.
+    const verComo = (evento, cambios) => {
+      for (const [prop, valor] of Object.entries(cambios)) {
+        try {
+          Object.defineProperty(evento, prop, { value: valor, configurable: true });
+        } catch (e) { /* un evento sellado se queda como viene */ }
+      }
+    };
+    // En `window` y en captura: es el primer escuchador de todo el recorrido,
+    // y este script corre antes que el código de la página.
+    addEventListener('keydown', (evento) => {
+      if (evento.isComposing || evento.metaKey) return;
+      if (evento.key !== 'N' && evento.key !== 'n') return;
+      if (evento.ctrlKey && evento.altKey && !evento.shiftKey) {
+        verComo(evento, { key: 'N', shiftKey: true, ctrlKey: false, altKey: false });
+      } else if (evento.shiftKey && !evento.ctrlKey && !evento.altKey) {
+        // Con bloqueo de mayúsculas llega «n» con Mayús, y WhatsApp también la
+        // sube a «N»: sin la mayúscula a la vista, las dos son solo una letra.
+        verComo(evento, { shiftKey: false });
+      }
+    }, true);
   }
 ";
 

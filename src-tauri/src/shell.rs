@@ -3,7 +3,8 @@
 //! Wrusp tiene **una sola ventana**. Dentro viven varios webviews hijos: el de
 //! ajustes (nuestro HTML) y uno por cuenta (WhatsApp Web). Solo uno está
 //! visible; cambiar de cuenta es ocultar el actual y mostrar el destino, sin
-//! recargar la sesión.
+//! recargar la sesión. La de ajustes solo existe mientras se usa: se crea al
+//! abrirla y se cierra un rato después de dejar de verse (ADR-047).
 //!
 //! En Linux los webviews hijos van al `vbox` GTK de la ventana, que reparte el
 //! espacio solo; en Windows y macOS tienen dimensiones propias y `sync_bounds`
@@ -225,8 +226,12 @@ fn handle_command(app: &AppHandle, origin: &str, url: &tauri::Url) {
         }
         if action == "add" {
             // La página de ajustes enfoca el campo de alta al recibir esto.
+            // Con la vista recién creada, esto llega antes que su `main.js`:
+            // la marca queda puesta y la página la atiende al arrancar.
             if let Some(view) = app.get_webview(SETTINGS_VIEW) {
-                let _ = view.eval("window.__wruspFocusAdd && window.__wruspFocusAdd()");
+                let _ = view.eval(
+                    "window.__wruspQuiereAlta = true; window.__wruspFocusAdd && window.__wruspFocusAdd()",
+                );
             }
         }
     });
@@ -417,6 +422,54 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     *app.state::<PendingGeometry>().pedido.lock().unwrap() = pedido;
     start_geometry_writer(app);
 
+    app.manage(ActiveView(Mutex::new(SETTINGS_VIEW.to_string())));
+    app.manage(Unread(Mutex::new(std::collections::HashMap::new())));
+    app.manage(SettingsGeneration(std::sync::atomic::AtomicU64::new(0)));
+
+    // Al abrir se entra en la primera cuenta: lo que quieres ver al arrancar
+    // una app de mensajería son tus mensajes, no los ajustes. Sin cuentas, la
+    // pantalla de ajustes es justo lo que hace falta para crear la primera.
+    // Con cuentas, la vista de ajustes ni se crea hasta que alguien la abra
+    // (ver `create_settings_view`).
+    let primera = {
+        let state = app.state::<ConfigState>();
+        let cfg = state.0.lock().unwrap();
+        cfg.accounts.first().map(|a| a.id.clone())
+    };
+    match primera {
+        Some(id) => show_account(app, &id)?,
+        None => {
+            create_settings_view(app)?;
+            // El estado va después de crear la vista: el script de arranque
+            // solo trae la maquinaria, y los datos llegan por `eval`.
+            refresh_rails(app);
+        }
+    }
+    #[cfg(debug_assertions)]
+    test_settings_lifecycle(app);
+    Ok(())
+}
+
+/// Cuántas veces se ha abierto la vista de ajustes. El cierre diferido de la
+/// vista oculta solo actúa si nadie la ha vuelto a abrir entretanto.
+pub struct SettingsGeneration(pub std::sync::atomic::AtomicU64);
+
+/// Lo que sigue viva la vista de ajustes oculta antes de cerrarse.
+const SETTINGS_HIDDEN_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Crea la vista de ajustes, que es nuestra página estática con IPC de Tauri.
+///
+/// Solo existe mientras hace falta (ADR-047). Antes se creaba al arrancar y se
+/// quedaba oculta toda la sesión, y oculta no es gratis: en la instalación del
+/// usuario, su proceso web tenía 163 MB de RSS y 118 MB de memoria gráfica,
+/// más un proceso de red de 44 MB, para una página que se abre de vez en
+/// cuando. Ahora se crea al abrirla y se cierra un minuto después de dejar
+/// de verse; recrearla cuesta medio segundo, que es lo que tarda en cargar
+/// `index.html`, y la página no tiene nada que hacer en segundo plano.
+fn create_settings_view(app: &AppHandle) -> tauri::Result<()> {
+    let Some(window) = app.get_window(MAIN_WINDOW) else {
+        return Ok(());
+    };
     let size = window
         .inner_size()?
         .to_logical::<f64>(window.scale_factor()?);
@@ -456,31 +509,73 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         })
         .initialization_script(aislado(rail::runtime_script(SETTINGS_VIEW)));
 
-    app.manage(ActiveView(Mutex::new(SETTINGS_VIEW.to_string())));
-    app.manage(Unread(Mutex::new(std::collections::HashMap::new())));
-
     window.add_child(
         settings,
         LogicalPosition::new(0.0, 0.0),
         LogicalSize::new(size.width, size.height),
     )?;
-
-    // El estado va después de crear la vista: el script de arranque solo trae
-    // la maquinaria, y los datos llegan por `eval`.
-    refresh_rails(app);
-
-    // Al abrir se entra en la primera cuenta: lo que quieres ver al arrancar
-    // una app de mensajería son tus mensajes, no los ajustes. Sin cuentas, la
-    // pantalla de ajustes es justo lo que hace falta para crear la primera.
-    let primera = {
-        let state = app.state::<ConfigState>();
-        let cfg = state.0.lock().unwrap();
-        cfg.accounts.first().map(|a| a.id.clone())
-    };
-    if let Some(id) = primera {
-        show_account(app, &id)?;
-    }
     Ok(())
+}
+
+/// Cierra la vista de ajustes cuando lleva `SETTINGS_HIDDEN_TTL` sin verse.
+/// Si se vuelve a abrir antes, la generación ha cambiado y no se toca.
+fn close_settings_later(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    let generacion = app.state::<SettingsGeneration>().0.load(Ordering::SeqCst);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(SETTINGS_HIDDEN_TTL);
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if handle
+                .state::<SettingsGeneration>()
+                .0
+                .load(Ordering::SeqCst)
+                != generacion
+            {
+                return;
+            }
+            if *handle.state::<ActiveView>().0.lock().unwrap() == SETTINGS_VIEW {
+                return;
+            }
+            if let Some(view) = handle.get_webview(SETTINGS_VIEW) {
+                let _ = view.close();
+                eprintln!(
+                    "wrusp: vista de ajustes cerrada tras {} s oculta",
+                    SETTINGS_HIDDEN_TTL.as_secs()
+                );
+            }
+        });
+    });
+}
+
+/// Arnés de pruebas: abrir y dejar los ajustes exige una mano en el ratón, así
+/// que con `WRUSP_TEST_AJUSTES=1` se abren a los 4 s y se vuelve a la primera
+/// cuenta a los 8 s; la vista debe cerrarse sola un minuto después. Nunca se
+/// compila en release.
+#[cfg(debug_assertions)]
+fn test_settings_lifecycle(app: &AppHandle) {
+    if std::env::var_os("WRUSP_TEST_AJUSTES").is_none() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || show_settings(&handle));
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let primera = {
+                let state = handle.state::<ConfigState>();
+                let cfg = state.0.lock().unwrap();
+                cfg.accounts.first().map(|a| a.id.clone())
+            };
+            if let Some(id) = primera {
+                let _ = show_account(&handle, &id);
+            }
+        });
+    });
 }
 
 /// Script con los datos actuales de la barra (cuentas, vista activa, tema y
@@ -751,9 +846,28 @@ pub fn focus_window(app: &AppHandle) {
 }
 
 pub fn show_settings(app: &AppHandle) {
+    app.state::<SettingsGeneration>()
+        .0
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let nueva = app.get_webview(SETTINGS_VIEW).is_none();
+    if nueva {
+        if let Err(err) = create_settings_view(app) {
+            eprintln!("wrusp: no se pudo abrir la vista de ajustes: {err}");
+        }
+    }
     *app.state::<ActiveView>().0.lock().unwrap() = SETTINGS_VIEW.to_string();
     focus_window(app);
     apply_visibility(app);
+    if nueva {
+        // Como las cuentas: una vista recién creada aparece visible por su
+        // cuenta un instante después, y hay que recolocar la visibilidad.
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let app = handle.clone();
+            let _ = handle.run_on_main_thread(move || apply_visibility(&app));
+        });
+    }
     refresh_rails(app);
 }
 
@@ -773,7 +887,14 @@ pub fn show_account(app: &AppHandle, account_id: &str) -> tauri::Result<()> {
         create_account_view(app, &account)?;
     }
     if app.get_webview(&label).is_some() {
-        *app.state::<ActiveView>().0.lock().unwrap() = account.id.clone();
+        let antes = std::mem::replace(
+            &mut *app.state::<ActiveView>().0.lock().unwrap(),
+            account.id.clone(),
+        );
+        // Se sale de los ajustes: su vista se cierra si no se vuelve pronto.
+        if antes == SETTINGS_VIEW && app.get_webview(SETTINGS_VIEW).is_some() {
+            close_settings_later(app);
+        }
     }
     focus_window(app);
     apply_visibility(app);
@@ -829,6 +950,7 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .initialization_script(aislado(browser::disguise_script()))
         .initialization_script(aislado(browser::hide_webcodecs_script()))
         .initialization_script(aislado(browser::fix_large_mp4_blobs_script()))
+        .initialization_script(aislado(browser::quiet_idle_audio_script()))
         .initialization_script(aislado(browser::hide_native_app_promo_script()))
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))
         .initialization_script(aislado(rail::runtime_script(&account.id)))

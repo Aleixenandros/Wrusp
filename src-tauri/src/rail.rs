@@ -74,18 +74,35 @@ pub fn runtime_script(own: &str) -> String {
 
   // Las órdenes viajan como petición de red al esquema propio `wrusp://`, no
   // como navegación: dos navegaciones en el mismo instante se pisan y se
-  // perdían avisos (notificación y contador llegan juntos). Sobre WhatsApp esa
-  // petición no sale —su CSP no admite esquemas propios en `connect-src`— y
-  // entra la navegación, que Rust también intercepta. En la página de ajustes,
-  // que es nuestra y no trae CSP, va por la vía rápida.
+  // perdían avisos (notificación y contador llegan juntos). En la página de
+  // ajustes, que es nuestra y no trae CSP, va por esa vía rápida.
+  //
+  // Sobre WhatsApp esa petición no sale nunca —su CSP no admite esquemas
+  // propios en `connect-src`— y entra la navegación, que Rust también
+  // intercepta. Así que, tras el primer rechazo, la vista va directa a la
+  // navegación: cada intento dejaba un error de CSP en el registro (casi todo
+  // lo que se escribía en él) y una petición fallida más. Las navegaciones
+  // salen en cola y separadas, para que dos órdenes seguidas no se pisen.
+  let soloNavegar = false;
+  let libre = 0;
+  const navegar = (url) => {{
+    const ahora = Date.now();
+    const cuando = Math.max(ahora, libre);
+    libre = cuando + 60;
+    if (cuando === ahora) window.location.href = url;
+    else setTimeout(() => {{ window.location.href = url; }}, cuando - ahora);
+  }};
   const go = (path) => {{
     const url = 'wrusp://' + path;
+    if (soloNavegar) {{ navegar(url); return; }}
     try {{
       fetch(url, {{ method: 'POST', mode: 'cors', keepalive: true }}).catch(() => {{
-        window.location.href = url;
+        soloNavegar = true;
+        navegar(url);
       }});
     }} catch (e) {{
-      window.location.href = url;
+      soloNavegar = true;
+      navegar(url);
     }}
   }};
   // El puente de ficheros lo usa para avisar de un pegado (ver `filedrop`).
@@ -261,16 +278,24 @@ pub fn runtime_script(own: &str) -> String {
   else document.addEventListener('DOMContentLoaded', vigilarCapas, {{ once: true }});
 
   // ── Atajos de teclado ───────────────────────────────────────
-  // Se capturan en fase de captura porque WhatsApp Web se come muchas teclas.
-  document.addEventListener('keydown', (ev) => {{
-    const ctrl = ev.ctrlKey || ev.metaKey;
+  // En `window` y en captura, que es antes que cualquier escuchador de la
+  // página. Los de Wrusp son Ctrl y una tecla, sin Alt: en Linux los atajos de
+  // WhatsApp llevan Ctrl+Alt (perfil, marcar como no leído, chat siguiente…),
+  // y antes la barra se quedaba con ellos porque solo miraba Ctrl (ADR-047).
+  // Lo que atiende Wrusp no le llega a WhatsApp: su tabla también tiene
+  // Ctrl++ y Ctrl+- para ampliar, y le llegaban a la vez que a Wrusp.
+  const atender = (ev, orden) => {{
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    go(orden);
+  }};
+  addEventListener('keydown', (ev) => {{
     if (ev.key === 'F5') {{ ev.preventDefault(); location.reload(); return; }}
-    if (!ctrl) return;
+    if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.isComposing) return;
 
     if (ev.key === 'Tab' || ev.key === 'PageDown' || ev.key === 'PageUp') {{
       const accs = st().accounts;
-      if (accs.length > 1) {{
-        ev.preventDefault();
+      if (accs.length > 1 && (ev.key === 'Tab' || !ev.shiftKey)) {{
         const currentIdx = accs.findIndex((a) => a.id === st().active);
         let nextIdx;
         if (ev.shiftKey || ev.key === 'PageUp') {{
@@ -278,24 +303,29 @@ pub fn runtime_script(own: &str) -> String {
         }} else {{
           nextIdx = currentIdx < 0 ? 0 : (currentIdx + 1) % accs.length;
         }}
-        go('switch/' + accs[nextIdx].id);
-        return;
+        atender(ev, 'switch/' + accs[nextIdx].id);
       }}
+      return;
     }}
+
+    // El zoom admite Mayús: en muchos teclados «+» sale con ella.
+    switch (ev.key) {{
+      case '+': case '=': atender(ev, 'zoom/in'); return;
+      case '-': case '_': atender(ev, 'zoom/out'); return;
+      case '0': if (!ev.shiftKey) atender(ev, 'zoom/reset'); return;
+    }}
+    if (ev.shiftKey) return;
 
     if (ev.key >= '1' && ev.key <= '9') {{
       const acc = st().accounts[Number(ev.key) - 1];
-      if (acc) {{ ev.preventDefault(); go('switch/' + acc.id); }}
+      if (acc) atender(ev, 'switch/' + acc.id);
       return;
     }}
     switch (ev.key.toLowerCase()) {{
-      case 'p': ev.preventDefault(); go('settings'); break;
-      case 'u': ev.preventDefault(); go('add'); break;
-      case 'w': ev.preventDefault(); go('hide'); break;
-      case 'q': ev.preventDefault(); go('quit'); break;
-      case '+': case '=': ev.preventDefault(); go('zoom/in'); break;
-      case '-': ev.preventDefault(); go('zoom/out'); break;
-      case '0': ev.preventDefault(); go('zoom/reset'); break;
+      case 'p': atender(ev, 'settings'); break;
+      case 'u': atender(ev, 'add'); break;
+      case 'w': atender(ev, 'hide'); break;
+      case 'q': atender(ev, 'quit'); break;
     }}
   }}, true);
 

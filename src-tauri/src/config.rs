@@ -246,6 +246,32 @@ pub fn download_dir(app: &AppHandle) -> PathBuf {
 /// procesos auxiliares, así que cambiarlo después no tendría efecto. Por eso
 /// lee el JSON directamente en vez de usar el estado de Tauri, que aún no
 /// existe.
+/// Variables de entorno que Wrusp fija para los procesos del motor (ver
+/// `main.rs` y `logs::init`). Los procesos web las heredan, que es para lo que
+/// están; los programas que se abren desde la aplicación no deben: el
+/// navegador o el gestor de ficheros, si no estaban abiertos ya, arrancarían
+/// con los ajustes de GStreamer y de `malloc` pensados para WebKit (ADR-047).
+static VARIABLES_DEL_MOTOR: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// Fija una variable para los procesos del motor, salvo que el usuario traiga
+/// la suya, y la anota para no pasársela a nadie más.
+pub fn fijar_para_el_motor(variable: &'static str, valor: &str) {
+    if std::env::var_os(variable).is_some() {
+        return;
+    }
+    std::env::set_var(variable, valor);
+    VARIABLES_DEL_MOTOR.lock().unwrap().push(variable);
+}
+
+/// El abridor del escritorio (`xdg-open`), sin las variables del motor.
+fn abridor() -> std::process::Command {
+    let mut orden = std::process::Command::new(ABRIDOR);
+    for variable in VARIABLES_DEL_MOTOR.lock().unwrap().iter() {
+        orden.env_remove(variable);
+    }
+    orden
+}
+
 pub fn apply_temp_dir_env() {
     let Some(cfg) = load_from_disk() else {
         return;
@@ -357,7 +383,7 @@ pub fn set_log_dir(app: AppHandle, path: String) -> Result<(), String> {
 pub fn open_log_dir(state: tauri::State<'_, ConfigState>) -> Result<(), String> {
     let dir = crate::logs::effective_dir(&state.0.lock().unwrap().log_dir);
     fs::create_dir_all(&dir).map_err(|e| format!("No se pudo crear la carpeta: {e}"))?;
-    std::process::Command::new(ABRIDOR)
+    abridor()
         .arg(&dir)
         .spawn()
         .map(|_| ())
@@ -1012,10 +1038,7 @@ pub fn open_in_browser(url: &tauri::Url) {
         eprintln!("wrusp: enlace ignorado por su esquema: {url}");
         return;
     }
-    if let Err(err) = std::process::Command::new(ABRIDOR)
-        .arg(url.as_str())
-        .spawn()
-    {
+    if let Err(err) = abridor().arg(url.as_str()).spawn() {
         eprintln!("wrusp: no se pudo abrir el enlace: {err}");
     }
 }
@@ -1058,7 +1081,7 @@ pub fn open_external(url: String) -> Result<(), String> {
         eprintln!("wrusp: dirección no permitida desde ajustes: {url}");
         return Err("Dirección no permitida".into());
     }
-    std::process::Command::new(ABRIDOR)
+    abridor()
         .arg(&url)
         .spawn()
         .map(|_| ())
@@ -1282,6 +1305,27 @@ pub fn mutate<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn las_variables_del_motor_no_llegan_a_los_programas_externos() {
+        let quitada = |orden: &std::process::Command, variable: &str| {
+            orden
+                .get_envs()
+                .any(|(clave, valor)| clave == variable && valor.is_none())
+        };
+        std::env::remove_var("WRUSP_PRUEBA_MOTOR");
+        fijar_para_el_motor("WRUSP_PRUEBA_MOTOR", "1");
+        assert_eq!(std::env::var("WRUSP_PRUEBA_MOTOR").as_deref(), Ok("1"));
+        assert!(quitada(&abridor(), "WRUSP_PRUEBA_MOTOR"));
+
+        // La que ya traía el usuario ni se pisa ni se le quita a nadie.
+        std::env::set_var("WRUSP_PRUEBA_USUARIO", "suya");
+        fijar_para_el_motor("WRUSP_PRUEBA_USUARIO", "nuestra");
+        assert_eq!(std::env::var("WRUSP_PRUEBA_USUARIO").as_deref(), Ok("suya"));
+        assert!(!abridor()
+            .get_envs()
+            .any(|(clave, _)| clave == "WRUSP_PRUEBA_USUARIO"));
+    }
 
     #[test]
     fn deserializar_config_antigua_con_valores_por_defecto() {
