@@ -20,17 +20,111 @@ pub fn to_tauri_theme(mode: ThemeMode) -> Option<tauri::Theme> {
     }
 }
 
-/// ¿El tema efectivo es oscuro? Con `System` se pregunta a la ventana, que
-/// conoce la preferencia del escritorio.
+/// ¿El tema efectivo es oscuro? Con `System`, lo que prefiera el escritorio.
 pub fn is_dark(app: &AppHandle, mode: ThemeMode) -> bool {
     match mode {
         ThemeMode::Dark => true,
         ThemeMode::Light => false,
-        ThemeMode::System => app
-            .get_window(shell::MAIN_WINDOW)
-            .and_then(|w| w.theme().ok())
-            .map(|t| t == tauri::Theme::Dark)
-            .unwrap_or(false),
+        ThemeMode::System => system_is_dark(app),
+    }
+}
+
+// En Linux no se le pregunta a la ventana. Con el tema del sistema,
+// `Window::theme()` de tao abre una conexión nueva al bus de sesión y consulta
+// el portal de forma síncrona (25 s de plazo para conectar y 5 para la
+// respuesta), y aquí se llega desde `refresh_rails`, en el hilo de GTK, con
+// cada cambio de no leídos: entrar en un chat. Era el único D-Bus síncrono de
+// Wrusp en ese hilo, y el 28-09-2026 la ventana se quedó 30 s sin atender nada
+// al entrar en uno (ADR-048). La preferencia la trae `watch_system_theme`
+// desde su propio hilo.
+#[cfg(target_os = "linux")]
+static SYSTEM_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+fn system_is_dark(_app: &AppHandle) -> bool {
+    SYSTEM_DARK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_is_dark(app: &AppHandle) -> bool {
+    app.get_window(shell::MAIN_WINDOW)
+        .and_then(|w| w.theme().ok())
+        .map(|t| t == tauri::Theme::Dark)
+        .unwrap_or(false)
+}
+
+/// Lee la preferencia de tema del escritorio y la sigue, en un hilo propio y
+/// con zbus bloqueante, como las notificaciones: la consulta al portal una
+/// vez y luego escucha su `SettingChanged`. Si cambia, redibuja las barras.
+#[cfg(target_os = "linux")]
+pub fn watch_system_theme(app: &AppHandle) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("wrusp-tema".into())
+        .spawn(move || {
+            if let Err(err) = follow_portal(&app) {
+                eprintln!(
+                    "wrusp: no se pudo seguir el tema del sistema ({err}); la barra usa el claro"
+                );
+            }
+        });
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn watch_system_theme(_app: &AppHandle) {}
+
+#[cfg(target_os = "linux")]
+fn follow_portal(app: &AppHandle) -> zbus::Result<()> {
+    use zbus::blocking::{Connection, MessageIterator};
+    use zbus::zvariant::OwnedValue;
+
+    const NAMESPACE: &str = "org.freedesktop.appearance";
+    const KEY: &str = "color-scheme";
+
+    let conn = Connection::session()?;
+    // La suscripción va antes que la lectura, para no perder un cambio que
+    // llegue entre las dos.
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.portal.Settings")?
+        .member("SettingChanged")?
+        .add_arg(NAMESPACE)?
+        .add_arg(KEY)?
+        .build();
+    let changes = MessageIterator::for_match_rule(rule, &conn, None)?;
+
+    let reply = conn.call_method(
+        Some("org.freedesktop.portal.Desktop"),
+        "/org/freedesktop/portal/desktop",
+        Some("org.freedesktop.portal.Settings"),
+        "Read",
+        &(NAMESPACE, KEY),
+    )?;
+    let (value,): (OwnedValue,) = reply.body().deserialize()?;
+    apply_color_scheme(app, &value);
+
+    for msg in changes {
+        let Ok(msg) = msg else { continue };
+        if let Ok((_, _, value)) = msg.body().deserialize::<(String, String, OwnedValue)>() {
+            apply_color_scheme(app, &value);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_color_scheme(app: &AppHandle, value: &zbus::zvariant::Value) {
+    use zbus::zvariant::Value;
+    // `Read`, el método antiguo del portal, envuelve el valor en otra variante.
+    let mut value = value;
+    while let Value::Value(inner) = value {
+        value = inner;
+    }
+    // 1 es «prefiere oscuro»; 0 (sin preferencia) y 2, claro. Como tao.
+    let dark = matches!(value, Value::U32(1));
+    if SYSTEM_DARK.swap(dark, std::sync::atomic::Ordering::Relaxed) != dark {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || shell::refresh_rails(&handle));
     }
 }
 

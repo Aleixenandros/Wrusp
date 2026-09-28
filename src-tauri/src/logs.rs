@@ -177,6 +177,48 @@ fn cabecera() {
     );
 }
 
+/// Cada cuánto se comprueba que el hilo de la ventana atiende, y a partir de
+/// cuánto se anota que no lo hacía.
+const LATIDO: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Anota en el registro cuándo el hilo de GTK deja de atender más de dos
+/// segundos y cuánto dura. Es el que dibuja la ventana (ADR-028): si se para,
+/// toda la aplicación parece colgada, y desde fuera un bloqueo dentro de una
+/// llamada síncrona se ve igual que el reposo (ADR-048). Un hilo aparte le
+/// manda un encargo vacío y mide cuánto tarda en correr. Los diálogos modales
+/// no cuentan: su bucle anidado también atiende los encargos.
+pub fn watch_main_thread(app: &crate::runtime::AppHandle) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("wrusp-latido".into())
+        .spawn(move || loop {
+            std::thread::sleep(LATIDO);
+            let (hecho, atendido) = std::sync::mpsc::sync_channel(1);
+            let desde = fecha_utc();
+            let enviado = std::time::Instant::now();
+            if app
+                .run_on_main_thread(move || {
+                    let _ = hecho.send(());
+                })
+                .is_err()
+            {
+                return;
+            }
+            if atendido.recv_timeout(LATIDO).is_ok() {
+                continue;
+            }
+            // Se espera a que corra para saber cuánto duró; si el encargo se
+            // descarta, la aplicación está cerrando.
+            if atendido.recv().is_err() {
+                return;
+            }
+            eprintln!(
+                "wrusp: el hilo de la ventana estuvo {:.1} s sin atender (desde {desde})",
+                enviado.elapsed().as_secs_f64()
+            );
+        });
+}
+
 #[cfg(not(unix))]
 fn redirect(_path: &std::path::Path) {
     // En Windows la redirección de descriptores es otra historia; el registro

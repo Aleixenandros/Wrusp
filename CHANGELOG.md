@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.20] — 2026-09-28
+
+### Corregido
+
+- **Entrar en un chat ya no deja la ventana esperando al escritorio.** Con el tema «Sistema», cada vez que cambiaba el contador de no leídos, por ejemplo al entrar en un chat que los tuviera, Wrusp preguntaba al escritorio si el tema era oscuro para pintar la barra lateral, y esperaba la respuesta en el hilo que dibuja la ventana. Casi siempre la respuesta es inmediata, pero si el escritorio tardaba, la ventana se quedaba sin responder: es la causa más probable de los cuelgues de hasta 30 segundos al entrar en chats con archivos grandes cuando Wrusp lleva horas abierto. Ahora Wrusp lee el tema del escritorio una vez, en segundo plano, y se entera solo cuando cambia.
+
+### Mantenimiento
+
+- **El registro anota cuándo la ventana deja de responder.** Si el hilo que dibuja la ventana pasa más de 2 segundos sin atender, queda una línea con la hora y la duración, para que un cuelgue deje rastro aunque nadie lo esté midiendo en ese momento.
+
 ## [0.4.19] — 2026-09-23
 
 ### Corregido

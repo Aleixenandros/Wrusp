@@ -241,8 +241,10 @@ fn main() {
             // Solo la ventana: la vista recién creada ya lleva el tema, y
             // `apply_theme` la recargaría (ver `theme`).
             theme::apply_window_theme(app.handle());
+            theme::watch_system_theme(app.handle());
             tray::create(app.handle())?;
             icon::apply(app.handle());
+            logs::watch_main_thread(app.handle());
 
             if std::env::args().any(|a| a == "--hidden") {
                 if let Some(w) = app.get_window(shell::MAIN_WINDOW) {
