@@ -82,6 +82,18 @@ fn contestar_consultas_de_permiso(native: &webkit2gtk::WebView) {
     use webkit2gtk::glib::{gobject_ffi, Value};
     use webkit2gtk::{ffi, SecurityOrigin};
 
+    // `connect_local` con una señal que no existe es un `panic!` de glib, y
+    // tumbaría la creación de la vista: un WebKitGTK que la quite o la
+    // renombre no debe dejar a Wrusp sin arrancar (PERM-01).
+    if webkit2gtk::glib::subclass::SignalId::lookup("query-permission-state", native.type_())
+        .is_none()
+    {
+        eprintln!(
+            "wrusp: este WebKitGTK no tiene «query-permission-state»; los permisos siguen su camino de siempre"
+        );
+        return;
+    }
+
     let _ = native.connect_local("query-permission-state", false, move |valores| {
         // Devolver `true` significa «contestada»; `false`, que WebKit siga su
         // política por defecto.

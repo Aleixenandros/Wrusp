@@ -9,6 +9,7 @@
 mod platform {
     use std::{
         collections::HashMap,
+        path::PathBuf,
         sync::{mpsc, Mutex, OnceLock},
     };
     use zbus::{blocking::Connection, zvariant::Value};
@@ -22,10 +23,35 @@ mod platform {
 
     type ClickCallback = Box<dyn Fn(String) + Send + Sync + 'static>;
     static CLICK_CALLBACK: OnceLock<ClickCallback> = OnceLock::new();
-    static NOTIFICATION_ACCOUNTS: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+    // Cómo se abre un fichero o una carpeta: lo da `main` (el abridor de
+    // `config`, sin las variables del motor). Este módulo no depende de él
+    // porque `banco_notificaciones` lo compila suelto.
+    type OpenCallback = Box<dyn Fn(&std::path::Path) + Send + Sync + 'static>;
+    static OPEN_CALLBACK: OnceLock<OpenCallback> = OnceLock::new();
 
-    fn notification_accounts() -> &'static Mutex<HashMap<u32, String>> {
-        NOTIFICATION_ACCOUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+    #[allow(dead_code)] // lo usa la app; `banco_notificaciones`, no
+    pub(super) fn on_open(callback: impl Fn(&std::path::Path) + Send + Sync + 'static) {
+        let _ = OPEN_CALLBACK.set(Box::new(callback));
+    }
+
+    fn abrir(ruta: &std::path::Path) {
+        if let Some(abrir) = OPEN_CALLBACK.get() {
+            abrir(ruta);
+        }
+    }
+    static DESTINOS: OnceLock<Mutex<HashMap<u32, Destino>>> = OnceLock::new();
+
+    /// A qué lleva pulsar un aviso: a la cuenta del mensaje o al fichero que
+    /// se acaba de descargar (PROD-12).
+    #[derive(Debug)]
+    #[allow(dead_code)] // `banco_notificaciones` solo manda mensajes
+    enum Destino {
+        Cuenta(String),
+        Fichero(PathBuf),
+    }
+
+    fn destinos() -> &'static Mutex<HashMap<u32, Destino>> {
+        DESTINOS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     #[allow(dead_code)]
@@ -35,7 +61,7 @@ mod platform {
 
     #[derive(Debug)]
     struct DesktopNotification {
-        account_id: String,
+        destino: Destino,
         title: String,
         body: String,
     }
@@ -44,17 +70,32 @@ mod platform {
     static WORKER: OnceLock<Worker> = OnceLock::new();
 
     pub(super) fn show(account_id: String, title: String, body: String) {
+        enviar(DesktopNotification {
+            destino: Destino::Cuenta(account_id),
+            title,
+            body,
+        });
+    }
+
+    /// Aviso de descarga terminada, con «Abrir» y «Mostrar en la carpeta».
+    #[allow(dead_code)]
+    pub(super) fn show_download(ruta: PathBuf) {
+        let nombre = ruta
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        enviar(DesktopNotification {
+            destino: Destino::Fichero(ruta),
+            title: "Descarga terminada".into(),
+            body: nombre,
+        });
+    }
+
+    fn enviar(notification: DesktopNotification) {
         let worker = WORKER.get_or_init(start_worker);
         match worker {
             Ok(sender) => {
-                if sender
-                    .send(DesktopNotification {
-                        account_id,
-                        title,
-                        body,
-                    })
-                    .is_err()
-                {
+                if sender.send(notification).is_err() {
                     eprintln!("wrusp: no se pudo entregar la notificación al worker");
                 }
             }
@@ -93,17 +134,23 @@ mod platform {
                         if member.as_str() == "ActionInvoked" {
                             if let Ok((id, action)) = msg.body().deserialize::<(u32, String)>() {
                                 eprintln!("wrusp: notificación pulsada (id {id}, acción {action})");
-                                let account_id = {
-                                    let mut map = notification_accounts().lock().unwrap();
-                                    map.remove(&id)
-                                };
-                                if let (Some(cb), Some(id)) = (CLICK_CALLBACK.get(), account_id) {
-                                    cb(id);
+                                let destino = destinos().lock().unwrap().remove(&id);
+                                match destino {
+                                    Some(Destino::Cuenta(cuenta)) => {
+                                        if let Some(cb) = CLICK_CALLBACK.get() {
+                                            cb(cuenta);
+                                        }
+                                    }
+                                    Some(Destino::Fichero(ruta)) if action == "carpeta" => {
+                                        mostrar_en_carpeta(&conn, &ruta)
+                                    }
+                                    Some(Destino::Fichero(ruta)) => abrir(&ruta),
+                                    None => {}
                                 }
                             }
                         } else if member.as_str() == "NotificationClosed" {
                             if let Ok((id, _reason)) = msg.body().deserialize::<(u32, u32)>() {
-                                let _ = notification_accounts().lock().unwrap().remove(&id);
+                                let _ = destinos().lock().unwrap().remove(&id);
                             }
                         }
                     }
@@ -136,10 +183,7 @@ mod platform {
             match result {
                 Ok(id) => {
                     eprintln!("wrusp: notificación enviada al escritorio (id {id})");
-                    notification_accounts()
-                        .lock()
-                        .unwrap()
-                        .insert(id, notification.account_id);
+                    destinos().lock().unwrap().insert(id, notification.destino);
                 }
                 Err(err) => {
                     eprintln!("wrusp: no se pudo mostrar la notificación ({err})");
@@ -149,16 +193,47 @@ mod platform {
         }
     }
 
+    /// Enseña el fichero seleccionado en el gestor de ficheros
+    /// (`org.freedesktop.FileManager1`, que implementan Nautilus, Nemo,
+    /// Dolphin…). Corre en el hilo de las señales, nunca en el de GTK. Si no hay
+    /// quien lo atienda, se abre la carpeta.
+    fn mostrar_en_carpeta(conn: &Connection, ruta: &std::path::Path) {
+        let uri = format!("file://{}", ruta.display());
+        let mostrado = conn.call_method(
+            Some("org.freedesktop.FileManager1"),
+            "/org/freedesktop/FileManager1",
+            Some("org.freedesktop.FileManager1"),
+            "ShowItems",
+            &(vec![uri.as_str()], ""),
+        );
+        if mostrado.is_err() {
+            if let Some(carpeta) = ruta.parent() {
+                abrir(carpeta);
+            }
+        }
+    }
+
     fn send_notification(
         connection: &Connection,
         notification: &DesktopNotification,
     ) -> zbus::Result<u32> {
-        let hints = HashMap::from([
-            ("desktop-entry", Value::Str(DESKTOP_ENTRY.into())),
-            ("category", Value::Str("im.received".into())),
-            ("sound-name", Value::Str("message-new-instant".into())),
-        ]);
-        let actions = vec!["default", "Abrir"];
+        let (hints, actions) = match notification.destino {
+            Destino::Cuenta(_) => (
+                HashMap::from([
+                    ("desktop-entry", Value::Str(DESKTOP_ENTRY.into())),
+                    ("category", Value::Str("im.received".into())),
+                    ("sound-name", Value::Str("message-new-instant".into())),
+                ]),
+                vec!["default", "Abrir"],
+            ),
+            Destino::Fichero(_) => (
+                HashMap::from([
+                    ("desktop-entry", Value::Str(DESKTOP_ENTRY.into())),
+                    ("category", Value::Str("transfer.complete".into())),
+                ]),
+                vec!["default", "Abrir", "carpeta", "Mostrar en la carpeta"],
+            ),
+        };
         let reply = connection.call_method(
             Some(NOTIFICATIONS_BUS),
             NOTIFICATIONS_PATH,
@@ -183,6 +258,8 @@ mod platform {
 mod platform {
     pub(super) fn on_click(_callback: impl Fn(String) + Send + Sync + 'static) {}
     pub(super) fn show(_account_id: String, _title: String, _body: String) {}
+    pub(super) fn show_download(_ruta: std::path::PathBuf) {}
+    pub(super) fn on_open(_callback: impl Fn(&std::path::Path) + Send + Sync + 'static) {}
 }
 
 #[allow(dead_code)]
@@ -193,4 +270,16 @@ pub fn on_notification_click(callback: impl Fn(String) + Send + Sync + 'static) 
 /// Encola un aviso sin bloquear el hilo principal de la aplicación.
 pub fn show(account_id: String, title: String, body: String) {
     platform::show(account_id, title, body);
+}
+
+/// Avisa de que una descarga ha terminado, con acciones para abrirla.
+#[allow(dead_code)]
+pub fn show_download(ruta: std::path::PathBuf) {
+    platform::show_download(ruta);
+}
+
+/// Cómo abrir el fichero de un aviso de descarga (o su carpeta).
+#[allow(dead_code)]
+pub fn on_open_path(callback: impl Fn(&std::path::Path) + Send + Sync + 'static) {
+    platform::on_open(callback);
 }

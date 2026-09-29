@@ -14,9 +14,14 @@ Wrusp wraps WhatsApp Web in a native webview and adds what the web version doesn
 - **Drag and drop** — drop a file onto a chat to send it.
 - **Unread counter** — badge on the tray and taskbar icon, and per account in the sidebar.
 - **Keyboard shortcuts** — `Ctrl`+`1`…`9` to switch accounts, `Ctrl`+`U` to add one, `Ctrl`+`P` for settings, plus per-account zoom that is remembered.
-- **System tray** — closing the window hides it; Wrusp keeps receiving messages from the tray.
+- **System tray** — closing the window hides it; Wrusp keeps receiving messages from the tray, whose menu shows each account's unread count.
+- **Do not disturb** — silence notifications from every account for 30 minutes, a few hours or until tomorrow, from the tray menu.
+- **Download finished notice** — with buttons to open the file or show it in its folder.
+- **Spell checking** — with the system dictionaries for your desktop languages.
+- **The window comes back where you left it** — with its size and, on X11, its position.
 - **Light / dark / system theme** — applied to the app and to WhatsApp Web itself.
 - **Single instance** — launching the binary again focuses the existing window.
+- **Updates that ask first** — checking for a new version offers your distribution's package, without downloading anything on its own.
 - **Inspectable log** — the app, the engine and the WhatsApp Web console write
   to a log file, with the folder configurable from settings.
 - **No Node** — the settings frontend is plain embedded HTML/CSS/JS.

@@ -43,6 +43,12 @@ pub struct ActiveView(pub Mutex<String>);
 /// Mensajes sin leer por cuenta, según el título de WhatsApp Web.
 pub struct Unread(pub Mutex<std::collections::HashMap<String, u32>>);
 
+/// Destino que se eligió para cada descarga en curso, por su dirección: al
+/// terminar hace falta aunque wry no lo diga (ver `on_download`).
+static DESCARGAS_EN_CURSO: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
 /// Límites del zoom, para no dejar la vista inservible.
 const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 2.5;
@@ -509,11 +515,23 @@ fn create_settings_view(app: &AppHandle) -> tauri::Result<()> {
         })
         .initialization_script(aislado(rail::runtime_script(SETTINGS_VIEW)));
 
-    window.add_child(
+    let vista = window.add_child(
         settings,
         LogicalPosition::new(0.0, 0.0),
         LogicalSize::new(size.width, size.height),
     )?;
+    // Su consola, al registro como la de las cuentas: un eslabón roto del
+    // arranque de `main.js` no dejaba más rastro que un error en ella
+    // (ADR-045), y lo que bloquee su CSP tampoco (ADR-048).
+    #[cfg(target_os = "linux")]
+    let _ = vista.with_webview(|plataforma| {
+        use webkit2gtk::{SettingsExt, WebViewExt};
+        if let Some(ajustes) = WebViewExt::settings(&plataforma.inner()) {
+            ajustes.set_enable_write_console_messages_to_stdout(true);
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = vista;
     Ok(())
 }
 
@@ -667,6 +685,13 @@ fn notify(app: &AppHandle, account_id: &str, title: &str, body: &str) {
         eprintln!("wrusp: notificación descartada: están desactivadas en ajustes");
         return;
     }
+    if let Some(hasta) = crate::tray::no_molestar() {
+        eprintln!(
+            "wrusp: notificación descartada: no molestar hasta las {}",
+            crate::logs::hora_minutos(hasta)
+        );
+        return;
+    }
 
     if let Some(account) = accounts.iter().find(|a| a.id == account_id) {
         if account.muted {
@@ -750,10 +775,18 @@ pub fn total_unread(app: &AppHandle) -> u32 {
     };
     let state = app.state::<Unread>();
     let unread = state.0.lock().unwrap();
-    accounts
-        .iter()
-        .map(|a| unread.get(&a.id).copied().unwrap_or(0))
-        .sum()
+    sum_unread(&accounts, &unread)
+}
+
+/// Suma saturada: el contador de cada cuenta lo manda su página, y dos
+/// cuentas con un número absurdo desbordaban un `u32` (en depuración, `panic`).
+fn sum_unread(
+    accounts: &[crate::config::Account],
+    unread: &std::collections::HashMap<String, u32>,
+) -> u32 {
+    accounts.iter().fold(0u32, |total, a| {
+        total.saturating_add(unread.get(&a.id).copied().unwrap_or(0))
+    })
 }
 
 /// Escribe el total de no leídos en el título de la ventana y en el tooltip de
@@ -766,10 +799,7 @@ fn refresh_unread_indicators(app: &AppHandle) {
     };
     let unread = app.state::<Unread>().0.lock().unwrap().clone();
 
-    let total: u32 = accounts
-        .iter()
-        .map(|a| unread.get(&a.id).copied().unwrap_or(0))
-        .sum();
+    let total = sum_unread(&accounts, &unread);
 
     if let Some(window) = app.get_window(MAIN_WINDOW) {
         let title = if total > 0 {
@@ -795,6 +825,7 @@ fn refresh_unread_indicators(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id(crate::tray::TRAY_ID) {
         let _ = tray.set_tooltip(Some(&tooltip));
     }
+    crate::tray::refresh_counts(app);
 }
 
 /// Etiqueta de la vista que debería verse ahora mismo.
@@ -959,8 +990,53 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         // Cada descarga pregunta dónde guardarse; la carpeta configurada en
         // ajustes es el punto de partida del diálogo.
         .on_download(|webview, event| {
-            let tauri::webview::DownloadEvent::Requested { destination, .. } = event else {
-                return true; // el resto de eventos no piden decisión
+            let (url, destination) = match event {
+                tauri::webview::DownloadEvent::Requested { url, destination } => (url, destination),
+                // Al terminar, un aviso con «Abrir» y «Mostrar en la carpeta»:
+                // con el diálogo cerrado no había forma de saber cuándo estaba
+                // lista (PROD-12). Si los avisos están apagados, tampoco este.
+                tauri::webview::DownloadEvent::Finished { url, path, success } => {
+                    let avisos = webview
+                        .app_handle()
+                        .state::<ConfigState>()
+                        .0
+                        .lock()
+                        .unwrap()
+                        .notifications;
+                    let apuntada = DESCARGAS_EN_CURSO.lock().unwrap().remove(url.as_str());
+                    // wry guarda «ha fallado» una sola vez por contexto y no lo
+                    // reinicia: tras una descarga cancelada o fallida, todas
+                    // las siguientes de esa cuenta llegan como fallidas y sin
+                    // ruta aunque se guarden bien (medido). Así que, si dice
+                    // que falló, se mira el fichero: vacío es que no llegó.
+                    let tamano = |ruta: &std::path::PathBuf| {
+                        std::fs::metadata(ruta)
+                            .ok()
+                            .filter(|m| m.is_file())
+                            .map(|m| m.len())
+                    };
+                    let ruta = path
+                        .filter(|_| success)
+                        .or_else(|| apuntada.clone().filter(|r| tamano(r).unwrap_or(0) > 0));
+                    match ruta {
+                        Some(ruta) => {
+                            eprintln!("wrusp: descarga terminada: {}", ruta.display());
+                            if avisos && crate::tray::no_molestar().is_none() {
+                                crate::notifications::show_download(ruta);
+                            }
+                        }
+                        None => {
+                            // WebKit deja un fichero vacío en la ruta, que era
+                            // nueva (`unique_path`): no se queda en Descargas.
+                            if let Some(vacio) = apuntada.filter(|r| tamano(r) == Some(0)) {
+                                let _ = std::fs::remove_file(&vacio);
+                            }
+                            eprintln!("wrusp: descarga sin terminar (cancelada o fallida)");
+                        }
+                    }
+                    return true;
+                }
+                _ => return true, // el resto de eventos no piden decisión
             };
             // wry propone «Descargas del sistema + nombre sugerido»; de la
             // propuesta solo interesa el nombre.
@@ -973,6 +1049,10 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
             match elegir_destino_descarga(&webview, &dir, &nombre) {
                 Some(ruta) => {
                     eprintln!("wrusp: descarga aceptada en {}", ruta.display());
+                    DESCARGAS_EN_CURSO
+                        .lock()
+                        .unwrap()
+                        .insert(url.to_string(), ruta.clone());
                     *destination = ruta;
                     true
                 }
@@ -1163,9 +1243,27 @@ pub fn sync_bounds(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        account_navigation_allowed, notification_is_redundant, unread_count_from_title,
+        account_navigation_allowed, notification_is_redundant, sum_unread, unread_count_from_title,
         unread_order_authorized,
     };
+
+    #[test]
+    fn el_total_de_no_leidos_no_desborda() {
+        let cuenta = |id: &str| crate::config::Account {
+            id: id.into(),
+            name: id.into(),
+            zoom: 1.0,
+            color: None,
+            muted: false,
+        };
+        let cuentas = [cuenta("a"), cuenta("b"), cuenta("c")];
+        let mut no_leidos = std::collections::HashMap::new();
+        no_leidos.insert("a".to_string(), 3);
+        no_leidos.insert("b".to_string(), 4);
+        assert_eq!(sum_unread(&cuentas, &no_leidos), 7, "la que falta cuenta 0");
+        no_leidos.insert("c".to_string(), u32::MAX);
+        assert_eq!(sum_unread(&cuentas, &no_leidos), u32::MAX);
+    }
 
     #[test]
     fn una_vista_solo_actualiza_su_propio_contador() {

@@ -87,7 +87,19 @@ pub const SCRIPT: &str = r#"(function () {
 /// Decodifica base64 estándar; devuelve `None` si aparece un carácter que no
 /// pertenece al alfabeto.
 pub(crate) fn desde_base64(texto: &str) -> Option<Vec<u8>> {
-    const ALFABETO: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // Tabla de 256 entradas en vez de buscar cada carácter en el alfabeto: un
+    // volcado de 64 MB son 85 millones de caracteres (ADR-048).
+    const NO: u8 = 0xff;
+    const TABLA: [u8; 256] = {
+        const ALFABETO: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut tabla = [NO; 256];
+        let mut i = 0;
+        while i < ALFABETO.len() {
+            tabla[ALFABETO[i] as usize] = i as u8;
+            i += 1;
+        }
+        tabla
+    };
     let mut salida = Vec::with_capacity(texto.len() / 4 * 3);
     let mut acumulado: u32 = 0;
     let mut bits = 0u32;
@@ -95,7 +107,11 @@ pub(crate) fn desde_base64(texto: &str) -> Option<Vec<u8>> {
         if byte == b'=' || byte.is_ascii_whitespace() {
             continue;
         }
-        let valor = ALFABETO.iter().position(|c| *c == byte)? as u32;
+        let valor = TABLA[byte as usize];
+        if valor == NO {
+            return None;
+        }
+        let valor = valor as u32;
         acumulado = (acumulado << 6) | valor;
         bits += 6;
         if bits >= 8 {
@@ -132,8 +148,40 @@ pub fn copy_text(_text: String) -> Result<(), String> {
     Err("Copiar al portapapeles solo está implementado en Linux".into())
 }
 
+/// Deja en el portapapeles la imagen que la página entregó en base64.
+///
+/// Se descodifica en un hilo aparte: en Fedora 44 gdk-pixbuf lo hace con
+/// glycin, que lanza un cargador aislado con bwrap y habla con él por D-Bus, y
+/// en el hilo de GTK eso es esperar a otro proceso (ADR-028, ADR-048). Al hilo
+/// de GTK solo vuelven los píxeles: en gtk-rs un `Pixbuf` no cruza de hilo.
 #[cfg(target_os = "linux")]
-fn al_portapapeles(bytes: &[u8]) {
+fn al_portapapeles(base64: String) {
+    let _ = std::thread::Builder::new()
+        .name("wrusp-imagen".into())
+        .spawn(move || {
+            let Some(bytes) = desde_base64(&base64) else {
+                eprintln!("wrusp: la página devolvió base64 ilegible");
+                return;
+            };
+            if let Some(imagen) = descodificar(&bytes) {
+                gtk::glib::MainContext::default().invoke(move || poner_imagen(imagen));
+            }
+        });
+}
+
+/// Los píxeles de una imagen ya descodificada, en lo que sí cruza de hilo.
+#[cfg(target_os = "linux")]
+struct Pixeles {
+    bytes: gtk::glib::Bytes,
+    alfa: bool,
+    bits: i32,
+    ancho: i32,
+    alto: i32,
+    paso: i32,
+}
+
+#[cfg(target_os = "linux")]
+fn descodificar(bytes: &[u8]) -> Option<Pixeles> {
     use gtk::gdk_pixbuf::PixbufLoader;
     use gtk::prelude::*;
 
@@ -141,12 +189,35 @@ fn al_portapapeles(bytes: &[u8]) {
     let cargada = cargador.write(bytes).and_then(|_| cargador.close());
     if let Err(err) = cargada {
         eprintln!("wrusp: la imagen copiada no se pudo decodificar ({err})");
-        return;
+        return None;
     }
     let Some(pixbuf) = cargador.pixbuf() else {
         eprintln!("wrusp: la imagen copiada no dio ningún fotograma");
-        return;
+        return None;
     };
+    Some(Pixeles {
+        bytes: pixbuf.read_pixel_bytes(),
+        alfa: pixbuf.has_alpha(),
+        bits: pixbuf.bits_per_sample(),
+        ancho: pixbuf.width(),
+        alto: pixbuf.height(),
+        paso: pixbuf.rowstride(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn poner_imagen(imagen: Pixeles) {
+    use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+
+    let pixbuf = Pixbuf::from_bytes(
+        &imagen.bytes,
+        Colorspace::Rgb,
+        imagen.alfa,
+        imagen.bits,
+        imagen.ancho,
+        imagen.alto,
+        imagen.paso,
+    );
     let Some(pantalla) = gtk::gdk::Display::default() else {
         return;
     };
@@ -182,7 +253,7 @@ fn copiar_imagen(vista: &webkit2gtk::WebView, uri: &str) {
         None::<&webkit2gtk::gio::Cancellable>,
         move |resultado| match resultado {
             Ok(valor) if valor.is_string() => {
-                let base64 = valor.to_str();
+                let base64: String = valor.to_str().into();
                 if base64.is_empty() {
                     eprintln!("wrusp: la página no pudo entregar la imagen que se copiaba");
                     return;
@@ -191,10 +262,7 @@ fn copiar_imagen(vista: &webkit2gtk::WebView, uri: &str) {
                     eprintln!("wrusp: imagen demasiado grande para copiarla");
                     return;
                 }
-                match desde_base64(&base64) {
-                    Some(bytes) => al_portapapeles(&bytes),
-                    None => eprintln!("wrusp: la página devolvió base64 ilegible"),
-                }
+                al_portapapeles(base64);
             }
             Ok(_) => eprintln!("wrusp: la página no devolvió la imagen que se copiaba"),
             Err(err) => eprintln!("wrusp: no se pudo leer la imagen que se copiaba ({err})"),

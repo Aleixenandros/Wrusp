@@ -207,20 +207,11 @@ pub struct Folders {
 }
 
 fn system_download_dir() -> PathBuf {
-    // `xdg-user-dir` respeta la carpeta traducida del escritorio; si no está,
-    // se cae a ~/Descargas... que no existe en todos los idiomas, así que el
-    // último recurso es el propio home.
-    if let Ok(out) = std::process::Command::new("xdg-user-dir")
-        .arg("DOWNLOAD")
-        .output()
-    {
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !path.is_empty() {
-            return PathBuf::from(path);
-        }
-    }
-    std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join("Downloads"))
+    // La carpeta traducida del escritorio sale de `user-dirs.dirs`, que es lo
+    // que lee `xdg-user-dir`. Lanzar ese programa costaba un proceso por
+    // descarga en el hilo de GTK (ADR-048); `dirs` lee el mismo fichero.
+    dirs::download_dir()
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")))
         .unwrap_or_else(std::env::temp_dir)
 }
 
@@ -512,9 +503,17 @@ fn dir_size(path: &std::path::Path) -> u64 {
 }
 
 #[tauri::command]
-pub fn get_diagnostics(state: tauri::State<'_, ConfigState>) -> SystemDiagnostics {
-    let cfg = state.0.lock().unwrap();
+pub async fn get_diagnostics(
+    state: tauri::State<'_, ConfigState>,
+) -> Result<SystemDiagnostics, String> {
+    let log_dir = state.0.lock().unwrap().log_dir.clone();
+    Ok(collect_diagnostics(&log_dir))
+}
 
+/// Lanza `gst-inspect-1.0` tres veces y recorre la carpeta de perfiles: por
+/// eso los comandos que la usan son asíncronos y no la llaman con el cerrojo
+/// de la configuración cogido (ADR-028, ADR-048).
+fn collect_diagnostics(log_dir: &str) -> SystemDiagnostics {
     let mut has_h264 = false;
     let mut h264_name = "No detectado".to_string();
     let mut has_aac = false;
@@ -560,7 +559,7 @@ pub fn get_diagnostics(state: tauri::State<'_, ConfigState>) -> SystemDiagnostic
     let profiles_size = dir_size(&prof_dir);
 
     // Tamaño de logs
-    let log_path = crate::logs::effective_dir(&cfg.log_dir).join("wrusp.log");
+    let log_path = crate::logs::effective_dir(log_dir).join("wrusp.log");
     let log_size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
 
     #[cfg(target_os = "linux")]
@@ -653,9 +652,15 @@ fn tail_of_file(path: &Path, lines: usize) -> Result<String, String> {
 /// usuario. Las rutas del home se acortan a `~`, porque el nombre de la
 /// cuenta del sistema suele ser el nombre real de la persona.
 #[tauri::command]
-pub fn diagnostic_report(app: AppHandle, state: tauri::State<'_, ConfigState>) -> String {
-    let diag = get_diagnostics(state.clone());
-    let cuentas = state.0.lock().unwrap().accounts.len();
+pub async fn diagnostic_report(
+    app: AppHandle,
+    state: tauri::State<'_, ConfigState>,
+) -> Result<String, String> {
+    let (log_dir, cuentas) = {
+        let cfg = state.0.lock().unwrap();
+        (cfg.log_dir.clone(), cfg.accounts.len())
+    };
+    let diag = collect_diagnostics(&log_dir);
     let ventana = app
         .get_webview_window(crate::shell::MAIN_WINDOW)
         .or_else(|| app.webview_windows().values().next().cloned());
@@ -666,13 +671,13 @@ pub fn diagnostic_report(app: AppHandle, state: tauri::State<'_, ConfigState>) -
         },
         None => "sin ventana".to_string(),
     };
-    report_markdown(
+    Ok(report_markdown(
         &diag,
         cuentas,
         &pantalla,
         &sistema_operativo(),
         &variables_multimedia(),
-    )
+    ))
 }
 
 /// Nombre de la distribución, de `/etc/os-release`. Es lo primero que se
@@ -1043,6 +1048,14 @@ pub fn open_in_browser(url: &tauri::Url) {
     }
 }
 
+/// Abre un fichero local con la aplicación del escritorio. Solo lo llama el
+/// aviso de descarga terminada, con la ruta que eligió el propio usuario.
+pub fn open_path(path: &Path) {
+    if let Err(err) = abridor().arg(path).spawn() {
+        eprintln!("wrusp: no se pudo abrir {} ({err})", path.display());
+    }
+}
+
 /// ¿Puede la página de ajustes pedir que se abra esta dirección?
 ///
 /// Restringido al repositorio del proyecto: esa página es nuestra, pero un
@@ -1092,8 +1105,12 @@ pub fn open_external(url: String) -> Result<(), String> {
 ///
 /// Prueba en cascada: zenity (GTK), kdialog (KDE/Qt) o qarma; si no hay
 /// selector disponible, la UI permite escribir la ruta a mano.
+///
+/// Asíncrona para que Tauri la corra fuera del hilo de GTK: esperar a que el
+/// usuario elija dejaba la ventana sin atender mientras el selector estaba
+/// abierto (ADR-028).
 #[tauri::command]
-pub fn pick_folder() -> Option<String> {
+pub async fn pick_folder() -> Option<String> {
     // 1. Zenity (GNOME / GTK)
     if let Ok(out) = std::process::Command::new("zenity")
         .args(["--file-selection", "--directory", "--title=Elegir carpeta"])
@@ -1281,22 +1298,33 @@ fn write_config_atomic(path: &Path, cfg: &AppConfig) -> Result<(), String> {
 /// Aplica una mutación a la configuración y la persiste. Si la mutación o la
 /// escritura fallan, la configuración en memoria vuelve a como estaba: lo que
 /// la UI da por hecho y lo que hay en disco no se separan.
+///
+/// El `fsync` se hace **sin** el cerrojo de `ConfigState`: el hilo de GTK lo
+/// coge con cada cambio de no leídos para pintar la barra, y con el disco
+/// ocupado (swap en fichero, por ejemplo) un `fsync` dura segundos (ADR-048).
+/// Las escrituras van en fila por su propio cerrojo, así que lo que queda en
+/// disco sigue el orden de los cambios, y solo `mutate` modifica la
+/// configuración, así que deshacer no pisa a nadie.
 pub fn mutate<R>(
     app: &AppHandle,
     f: impl FnOnce(&mut AppConfig) -> Result<R, String>,
 ) -> Result<R, String> {
+    static ESCRITURA: Mutex<()> = Mutex::new(());
+    let _en_fila = ESCRITURA.lock().unwrap_or_else(|e| e.into_inner());
     let state = app.state::<ConfigState>();
-    let mut cfg = state.0.lock().unwrap();
-    let backup = cfg.clone();
-    let out = match f(&mut cfg) {
-        Ok(out) => out,
-        Err(err) => {
-            *cfg = backup;
-            return Err(err);
+    let (out, backup, nueva) = {
+        let mut cfg = state.0.lock().unwrap();
+        let backup = cfg.clone();
+        match f(&mut cfg) {
+            Ok(out) => (out, backup, cfg.clone()),
+            Err(err) => {
+                *cfg = backup;
+                return Err(err);
+            }
         }
     };
-    if let Err(err) = save(app, &cfg) {
-        *cfg = backup;
+    if let Err(err) = save(app, &nueva) {
+        *state.0.lock().unwrap() = backup;
         return Err(err);
     }
     Ok(out)

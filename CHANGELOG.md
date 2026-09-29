@@ -4,6 +4,34 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.21] — 2026-09-29
+
+### Añadido
+
+- **«No molestar» desde la bandeja.** Silencia los avisos de todas las cuentas durante 30 minutos, 1, 2 u 8 horas o hasta las 8:00 del día siguiente, y vuelve solo al acabar. Mientras dura, el menú dice hasta qué hora, y «Volver a avisar» lo quita antes. Es lo mismo que silenciar una cuenta, para todas a la vez y con fecha de caducidad: al reiniciar Wrusp, los avisos vuelven.
+- **El menú de la bandeja muestra los no leídos de cada cuenta**, como «Trabajo (5)». En Linux el texto emergente del icono no se ve, así que hasta ahora no había forma de saber qué cuenta tenía mensajes sin abrir la ventana.
+- **Aviso al terminar una descarga**, con dos botones: abrir el fichero o enseñarlo seleccionado en su carpeta. Respeta el interruptor de notificaciones y el «No molestar».
+
+### Corregido
+
+- **Varias acciones ya no dejan la ventana sin responder mientras esperan.** Descargar un fichero sin carpeta de descargas configurada lanzaba un programa para averiguarla; elegir una carpeta en Ajustes, abrir la pestaña Diagnóstico o copiar su informe esperaban a otros programas; copiar una imagen del chat la descodificaba con el cargador de imágenes aislado de Fedora; y guardar cualquier ajuste bloqueaba la configuración mientras el disco confirmaba la escritura, algo que con el disco ocupado tarda segundos. Todo eso sigue funcionando igual, pero fuera del hilo que dibuja la ventana.
+- **Una descarga que falla ya no deja un fichero vacío en tu carpeta de descargas.**
+- **Los errores de la pantalla de Ajustes se ven.** Si no se podía añadir, renombrar, borrar, reordenar, colorear, silenciar o abrir una cuenta, o abrir un enlace o el selector de carpetas, no pasaba nada visible; ahora lo dice un aviso.
+- **Diagnóstico ya no da por bueno un decodificador de vídeo que solo sirve a medias.** Con openh264 como único decodificador H.264, que solo entiende el perfil más básico, salía «Disponible» en verde aunque muchos vídeos de móvil no se fueran a ver; ahora sale «Limitado», con el paquete que lo arregla.
+
+### Cambiado
+
+- **Cada línea del registro lleva su hora**, también las del motor, las de GStreamer y las de la consola de las páginas. Sin ella, un cuelgue solo se podía situar mirando el registro mientras pasaba.
+- **El registro deja fuera el ruido de los gráficos de WhatsApp.** WhatsApp dibuja círculos con un valor que WebKit no admite, y cada uno dejaba una línea de error: eran casi siete de cada diez líneas del registro. Se omiten y queda una línea que dice cuántas.
+- **La pantalla de Ajustes tiene una política de seguridad de contenido.** Es la única vista con acceso a las órdenes internas de Wrusp, y ahora solo puede cargar lo suyo y conectarse a sí misma, al canal interno y a la consulta de versiones de GitHub.
+
+### Mantenimiento
+
+- **La consola de la pantalla de Ajustes también va al registro**, como la de las cuentas: un fallo al arrancar esa página ya no deja rastro solo en una consola que nadie ve.
+- **Wrusp arranca aunque WebKitGTK cambie la señal con la que pregunta por los permisos.** Conectarse a una señal que no existe es un error fatal en la biblioteca de GLib que usa Wrusp; ahora se comprueba antes y, si falta, se anota y los permisos siguen su camino de siempre.
+- **La revisión de licencias, procedencia y dependencias prohibidas bloquea el CI**, y la publicación de una versión pasa la revisión completa, avisos de seguridad incluidos.
+- **Dependencias al día**: `dirs` 7 (sin cambios de rutas en Linux), parches de Tauri y acciones del CI.
+
 ## [0.4.20] — 2026-09-28
 
 ### Corregido

@@ -229,6 +229,7 @@ fn main() {
             app.manage(ConfigState(Mutex::new(cfg)));
 
             let handle = app.handle().clone();
+            notifications::on_open_path(config::open_path);
             notifications::on_notification_click(move |account_id| {
                 let h = handle.clone();
                 let _ = handle.run_on_main_thread(move || {

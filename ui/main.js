@@ -223,6 +223,7 @@ async function initFolders() {
       try {
         picked = await invoke("pick_folder");
       } catch (err) {
+        aviso(`No se pudo abrir el selector de carpetas: ${err}`, "error");
         console.error("pick_folder:", err);
         return;
       }
@@ -355,9 +356,10 @@ async function initAbout() {
 
   for (const btn of document.querySelectorAll("[data-link]")) {
     btn.addEventListener("click", () => {
-      invoke("open_external", { url: about[btn.dataset.link] }).catch((err) =>
-        console.error("open_external:", err)
-      );
+      invoke("open_external", { url: about[btn.dataset.link] }).catch((err) => {
+        aviso("No se pudo abrir el enlace en el navegador", "error");
+        console.error("open_external:", err);
+      });
     });
   }
 
@@ -467,6 +469,7 @@ function accountRow(account, index, allAccounts) {
       await invoke("reorder_accounts", { ids: newOrder });
       await refresh();
     } catch (err) {
+      aviso(`No se pudo cambiar el orden de las cuentas: ${err}`, "error");
       console.error("reorder_accounts:", err);
     }
   });
@@ -484,6 +487,7 @@ function accountRow(account, index, allAccounts) {
       await invoke("reorder_accounts", { ids: newOrder });
       await refresh();
     } catch (err) {
+      aviso(`No se pudo cambiar el orden de las cuentas: ${err}`, "error");
       console.error("reorder_accounts:", err);
     }
   });
@@ -517,6 +521,7 @@ function accountRow(account, index, allAccounts) {
       await invoke("set_account_color", { id: account.id, color: nextColor || null });
       await refresh();
     } catch (err) {
+      aviso(`No se pudo cambiar el color de la cuenta: ${err}`, "error");
       console.error("set_account_color:", err);
     }
   });
@@ -534,6 +539,7 @@ function accountRow(account, index, allAccounts) {
       await invoke("set_account_muted", { id: account.id, muted: !account.muted });
       await refresh();
     } catch (err) {
+      aviso(`No se pudo cambiar el silencio de la cuenta: ${err}`, "error");
       console.error("set_account_muted:", err);
     }
   });
@@ -546,6 +552,7 @@ function accountRow(account, index, allAccounts) {
     try {
       await invoke("open_account", { id: account.id });
     } catch (err) {
+      aviso(`No se pudo abrir la cuenta: ${err}`, "error");
       console.error("open_account:", err);
     }
   });
@@ -569,6 +576,7 @@ function accountRow(account, index, allAccounts) {
     try {
       await invoke("remove_account", { id: account.id });
     } catch (err) {
+      aviso(`No se pudo borrar la cuenta: ${err}`, "error");
       console.error("remove_account:", err);
     }
     await refresh();
@@ -591,6 +599,7 @@ function accountRow(account, index, allAccounts) {
         try {
           await invoke("rename_account", { id: account.id, name: value });
         } catch (err) {
+          aviso(`No se pudo renombrar la cuenta: ${err}`, "error");
           console.error("rename_account:", err);
         }
       }
@@ -635,7 +644,15 @@ async function loadDiagnostics() {
     const diag = await invoke("get_diagnostics");
     const h264El = document.getElementById("diag-h264");
     const h264DetailEl = document.getElementById("diag-h264-detail");
-    if (diag.hasH264Decoder) {
+    if (diag.hasH264Decoder && diag.h264DecoderName.startsWith("openh264")) {
+      // openh264 solo sabe el perfil Baseline, y los vídeos de móvil suelen ser
+      // Main o High: con él, «disponible» en verde prometía lo que no hay.
+      h264El.textContent = "Limitado";
+      h264El.className = "diag-status warn";
+      h264DetailEl.textContent =
+        "openh264dec solo decodifica el perfil Baseline: muchos vídeos de móvil no se verán. " +
+        "Instala gstreamer1-plugin-libav / gstreamer1.0-libav";
+    } else if (diag.hasH264Decoder) {
       h264El.textContent = "Disponible";
       h264El.className = "diag-status ok";
       h264DetailEl.textContent = diag.h264DecoderName;
@@ -785,6 +802,7 @@ formEl.addEventListener("submit", async (ev) => {
     nameEl.value = "";
     await refresh();
   } catch (err) {
+    aviso(`No se pudo añadir la cuenta: ${err}`, "error");
     console.error("add_account:", err);
   }
 });

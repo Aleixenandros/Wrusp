@@ -14,9 +14,14 @@ Wrusp envuelve WhatsApp Web en un webview nativo y añade lo que la web no ofrec
 - **Arrastrar y soltar** — suelta un fichero sobre un chat para enviarlo.
 - **Contador de no leídos** — insignia sobre el icono de la bandeja y de la barra de tareas, y por cuenta en la barra lateral.
 - **Atajos de teclado** — `Ctrl`+`1`…`9` para cambiar de cuenta, `Ctrl`+`U` para añadir, `Ctrl`+`P` para ajustes, y zoom recordado por cuenta.
-- **Bandeja del sistema** — cerrar la ventana la oculta; Wrusp sigue recibiendo mensajes desde el tray.
+- **Bandeja del sistema** — cerrar la ventana la oculta; Wrusp sigue recibiendo mensajes desde el tray, cuyo menú muestra los no leídos de cada cuenta.
+- **No molestar** — silencia los avisos de todas las cuentas durante 30 minutos, unas horas o hasta mañana, desde el menú de la bandeja.
+- **Aviso de descarga terminada** — con botones para abrir el fichero o verlo en su carpeta.
+- **Corrector ortográfico** — con los diccionarios del sistema en los idiomas del escritorio.
+- **La ventana vuelve donde estaba** — con su tamaño y, en X11, su posición.
 - **Tema claro / oscuro / sistema** — aplicado tanto a la app como al propio WhatsApp Web.
 - **Instancia única** — relanzar el binario enfoca la ventana existente.
+- **Actualizaciones que preguntan** — comprobar si hay versión nueva ofrece el paquete de tu distribución, sin descargar nada por su cuenta.
 - **Registro consultable** — la aplicación, el motor y la consola de WhatsApp
   Web escriben en un log con carpeta configurable desde ajustes.
 - **Sin Node** — el frontend de gestión es HTML/CSS/JS estático embebido.

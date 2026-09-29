@@ -76,32 +76,16 @@ pub fn guardar_medio_fallido(app: &AppHandle, etiqueta: &str, id: &str) {
             None::<&webkit2gtk::gio::Cancellable>,
             move |resultado| match resultado {
                 Ok(valor) if valor.is_string() => {
-                    let base64 = valor.to_str();
+                    let base64: String = valor.to_str().into();
                     if base64.is_empty() || base64.len() > MAX_BASE64 {
                         eprintln!("wrusp: medio fallido {id}: la página no lo entregó (vacío o demasiado grande)");
                         return;
                     }
-                    let Some(bytes) = crate::clipboard::desde_base64(&base64) else {
-                        eprintln!("wrusp: medio fallido {id}: base64 ilegible");
-                        return;
-                    };
-                    let _ = std::fs::create_dir_all(&dir);
-                    let nombre = format!(
-                        "{}-{id}.mp4",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0)
-                    );
-                    let ruta = dir.join(nombre);
-                    match std::fs::write(&ruta, &bytes) {
-                        Ok(()) => eprintln!(
-                            "wrusp: medio fallido guardado en {} ({} KiB); analízalo con gst-discoverer-1.0 o ffprobe",
-                            ruta.display(),
-                            bytes.len() / 1024
-                        ),
-                        Err(err) => eprintln!("wrusp: no se pudo guardar el medio fallido en {} ({err})", ruta.display()),
-                    }
+                    // Descodificar y escribir hasta 64 MB no se hace en el
+                    // hilo de GTK, que es donde llega esta respuesta (ADR-048).
+                    let _ = std::thread::Builder::new()
+                        .name("wrusp-volcado".into())
+                        .spawn(move || escribir_volcado(&dir, &id, &base64));
                 }
                 Ok(_) => eprintln!("wrusp: medio fallido {id}: la página no devolvió bytes"),
                 Err(err) => eprintln!("wrusp: medio fallido {id}: no se pudo leer ({err})"),
@@ -110,6 +94,35 @@ pub fn guardar_medio_fallido(app: &AppHandle, etiqueta: &str, id: &str) {
     });
     if let Err(err) = resultado {
         eprintln!("wrusp: no se pudo pedir el medio fallido ({err})");
+    }
+}
+
+/// Descodifica el medio que entregó la página y lo deja en `dir`.
+#[cfg(target_os = "linux")]
+fn escribir_volcado(dir: &std::path::Path, id: &str, base64: &str) {
+    let Some(bytes) = crate::clipboard::desde_base64(base64) else {
+        eprintln!("wrusp: medio fallido {id}: base64 ilegible");
+        return;
+    };
+    let _ = std::fs::create_dir_all(dir);
+    let nombre = format!(
+        "{}-{id}.mp4",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    let ruta = dir.join(nombre);
+    match std::fs::write(&ruta, &bytes) {
+        Ok(()) => eprintln!(
+            "wrusp: medio fallido guardado en {} ({} KiB); analízalo con gst-discoverer-1.0 o ffprobe",
+            ruta.display(),
+            bytes.len() / 1024
+        ),
+        Err(err) => eprintln!(
+            "wrusp: no se pudo guardar el medio fallido en {} ({err})",
+            ruta.display()
+        ),
     }
 }
 

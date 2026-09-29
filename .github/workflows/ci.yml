@@ -191,12 +191,12 @@ jobs:
         working-directory: src-tauri
         run: cargo deny --all-features check advisories
 
-      # Licencias, duplicados y procedencia. Advisory: el árbol de Tauri
-      # arrastra duplicados que no dependen de nosotros.
+      # Licencias, duplicados y procedencia. Bloqueante: los duplicados que
+      # arrastra el árbol de Tauri son avisos en `deny.toml`, así que esto solo
+      # para ante una licencia, un origen o una prohibición de verdad.
       - name: cargo-deny (licencias, bans y fuentes)
         working-directory: src-tauri
         run: cargo deny --all-features check bans licenses sources
-        continue-on-error: true
 
       - name: SBOM (CycloneDX)
         run: |
