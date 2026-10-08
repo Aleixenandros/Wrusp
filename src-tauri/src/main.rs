@@ -140,9 +140,6 @@ fn main() {
     // registro y los procesos del webview lo heredan.
     logs::init();
 
-    #[cfg(target_os = "linux")]
-    let _bus_multimedia = mpris::configurar(config::APP_IDENTIFIER);
-
     // Decodificación de vídeo por software (ver la función).
     preferir_decodificacion_por_software();
 
@@ -230,6 +227,13 @@ fn main() {
         ])
         .setup(|app| {
             config::debug_assert_identifier(app.handle());
+            // Los plugins (incluida la instancia única, que usa zbus) ya
+            // conectaron al bus original. El filtro se instala antes de
+            // crear las vistas y solo lo heredan sus procesos WebKit.
+            #[cfg(target_os = "linux")]
+            if let Some(proxy) = mpris::configurar(config::APP_IDENTIFIER) {
+                app.manage(proxy);
+            }
             let cfg = config::load(app.handle());
             app.manage(ConfigState(Mutex::new(cfg)));
 

@@ -87,8 +87,9 @@ impl Drop for Proxy {
     }
 }
 
-/// Antes de crear GTK/Tauri y cualquier proceso web. Si falta el proxy o no
-/// arranca, Wrusp sigue funcionando y deja el motivo en el registro.
+/// Después de inicializar los plugins de Tauri y antes de crear las vistas.
+/// Si falta el proxy o no arranca, Wrusp sigue funcionando y deja el motivo
+/// en el registro.
 pub fn configurar(identificador: &str) -> Option<Proxy> {
     let resultado = (|| {
         let bus = gtk::gio::dbus_address_get_for_bus_sync(
@@ -121,9 +122,21 @@ pub fn restaurar_bus(orden: &mut Command) {
     }
 }
 
+/// Las conexiones Rust usan el bus original. xdg-dbus-proxy < 0.1.6 no admite
+/// la negociación en paralelo de zbus (upstream #21); GLib, que usa WebKit,
+/// sí funciona con esas versiones. También mantiene los avisos y el tema
+/// independientes del filtro multimedia.
+pub fn conexion_sesion() -> zbus::Result<zbus::blocking::Connection> {
+    match BUS_ORIGINAL.get() {
+        Some(bus) => zbus::blocking::connection::Builder::address(bus.as_str())?.build(),
+        None => zbus::blocking::Connection::session(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gtk::{gio, glib::variant::ToVariant};
     use zbus::blocking::{connection::Builder, fdo::DBusProxy};
 
     struct Avisos;
@@ -138,33 +151,61 @@ mod tests {
     #[test]
     #[ignore = "requiere xdg-dbus-proxy y un bus aislado: dbus-run-session -- cargo test -- --ignored"]
     fn el_proxy_bloquea_mpris_y_conserva_la_instancia_y_el_escritorio() {
-        let bus = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap();
-        let proxy = Proxy::iniciar(&bus, "wrusp").unwrap();
-        let conn = Builder::address(proxy.direccion().as_str())
+        // La instancia única se inicializa antes de instalar el filtro.
+        let instancia = Builder::session()
+            .unwrap()
+            .name("wrusp.SingleInstance")
             .unwrap()
             .build()
             .unwrap();
-        assert!(conn
-            .request_name("org.mpris.MediaPlayer2.wrusp.Prueba")
-            .is_err());
-        conn.request_name("wrusp.SingleInstance").unwrap();
-        conn.request_name("org.kde.StatusNotifierItem.Prueba")
-            .unwrap();
+        let proxy = configurar("wrusp").unwrap();
+        // El cliente del filtro es GLib, igual que en los procesos WebKit.
+        // Con zbus fallaría la propia conexión en Ubuntu (proxy 0.1.5).
+        let web = gio::DBusConnection::for_address_sync(
+            &proxy.direccion(),
+            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+            None::<&gio::DBusAuthObserver>,
+            None::<&gio::Cancellable>,
+        )
+        .unwrap();
+        let pedir_nombre = |nombre: &str| {
+            web.call_sync(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "RequestName",
+                Some(&(nombre, 0_u32).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                2000,
+                None::<&gio::Cancellable>,
+            )
+        };
+        assert!(pedir_nombre("org.mpris.MediaPlayer2.wrusp.Prueba").is_err());
+        pedir_nombre("org.kde.StatusNotifierItem.Prueba").unwrap();
 
-        // Un servicio simulado de notificaciones sigue siendo alcanzable.
-        let escritorio = Builder::address(bus.as_str())
-            .unwrap()
-            .name("org.freedesktop.Notifications")
-            .unwrap()
-            .serve_at("/org/freedesktop/Notifications", Avisos)
-            .unwrap()
-            .build()
+        // Los clientes Rust creados después del filtro deben poder conectar
+        // al escritorio con la misma biblioteca que usa la aplicación.
+        let escritorio = conexion_sesion().unwrap();
+        escritorio
+            .object_server()
+            .at("/org/freedesktop/Notifications", Avisos)
+            .unwrap();
+        escritorio
+            .request_name("org.freedesktop.Notifications")
             .unwrap();
         // El filtro tampoco impide que otros programas publiquen MPRIS.
         escritorio
             .request_name("org.mpris.MediaPlayer2.otro")
             .unwrap();
+        let conn = conexion_sesion().unwrap();
         let dbus = DBusProxy::new(&conn).unwrap();
+        assert_eq!(
+            dbus.get_name_owner("wrusp.SingleInstance".try_into().unwrap())
+                .unwrap(),
+            instancia.unique_name().unwrap().clone()
+        );
         assert!(dbus
             .name_has_owner("org.freedesktop.Notifications".try_into().unwrap())
             .unwrap());
@@ -183,6 +224,7 @@ mod tests {
         );
 
         let socket = proxy.socket.clone();
+        web.close_sync(None::<&gio::Cancellable>).unwrap();
         drop(conn);
         drop(proxy);
         assert!(!socket.exists());

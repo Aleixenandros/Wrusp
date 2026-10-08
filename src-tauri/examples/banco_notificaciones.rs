@@ -9,6 +9,12 @@
 //! cargo run --example banco_notificaciones
 //! ```
 
+// Comparte la conexión al bus original con la aplicación; este banco no
+// necesita arrancar el filtro multimedia.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "../src/mpris.rs"]
+mod mpris;
 #[path = "../src/notifications.rs"]
 mod notifications;
 

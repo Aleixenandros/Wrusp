@@ -162,7 +162,7 @@ mod platform {
         let mut connection: Option<Connection> = None;
         while let Ok(notification) = receiver.recv() {
             if connection.is_none() {
-                match Connection::session() {
+                match crate::mpris::conexion_sesion() {
                     Ok(new_connection) => {
                         spawn_signal_listener(&new_connection);
                         connection = Some(new_connection);

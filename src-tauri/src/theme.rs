@@ -75,13 +75,13 @@ pub fn watch_system_theme(_app: &AppHandle) {}
 
 #[cfg(target_os = "linux")]
 fn follow_portal(app: &AppHandle) -> zbus::Result<()> {
-    use zbus::blocking::{Connection, MessageIterator};
+    use zbus::blocking::MessageIterator;
     use zbus::zvariant::OwnedValue;
 
     const NAMESPACE: &str = "org.freedesktop.appearance";
     const KEY: &str = "color-scheme";
 
-    let conn = Connection::session()?;
+    let conn = crate::mpris::conexion_sesion()?;
     // La suscripción va antes que la lectura, para no perder un cambio que
     // llegue entre las dos.
     let rule = zbus::MatchRule::builder()

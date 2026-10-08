@@ -100,6 +100,15 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
+      - name: Controles multimedia y notificaciones (bus aislado)
+        working-directory: src-tauri
+        run: |
+          sudo apt-get install -y dbus xdg-dbus-proxy
+          WRUSP_TEST_RUNTIME=$(mktemp -d)
+          trap 'rm -rf "$WRUSP_TEST_RUNTIME"' EXIT
+          XDG_RUNTIME_DIR="$WRUSP_TEST_RUNTIME" dbus-run-session -- \
+            cargo test --locked mpris::tests -- --ignored
+
       - name: cargo clippy (bloqueante)
         working-directory: src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings

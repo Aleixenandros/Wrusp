@@ -23,6 +23,11 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.23" date="2026-10-08">
+      <description>
+        <p>Compatibilidad del filtro multimedia con Ubuntu: las notificaciones, el tema del escritorio y la instancia única usan el bus original mientras WebKit mantiene el filtro de reproductores.</p>
+      </description>
+    </release>
     <release version="0.4.22" date="2026-10-08">
       <description>
         <p>Los audios, vídeos y sonidos de WhatsApp dejan de acumular controles multimedia en GNOME. Se mantiene la reproducción dentro de WhatsApp y la entrega de notificaciones del escritorio.</p>

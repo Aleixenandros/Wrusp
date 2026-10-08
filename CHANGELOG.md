@@ -4,6 +4,16 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.23] — 2026-10-08
+
+### Corregido
+
+- **El filtro de controles multimedia funciona también con el proxy D-Bus de Ubuntu.** Las versiones anteriores a 0.1.6 no admiten la forma de conectar de la biblioteca Rust: la prueba de Linux fallaba y la 0.4.22 podía perder las notificaciones o la instancia única en esos sistemas. Ahora el filtro se instala después de inicializar la instancia única; las notificaciones y el tema usan el bus original, y WebKit mantiene el filtro que evita los reproductores acumulados.
+
+### Mantenimiento
+
+- **La prueba del filtro multimedia también bloquea la publicación de versiones**, además del CI de la rama principal. Comprueba el cliente GLib que usa WebKit y las conexiones Rust al escritorio.
+
 ## [0.4.22] — 2026-10-08
 
 ### Corregido
