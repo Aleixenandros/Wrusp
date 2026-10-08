@@ -58,6 +58,12 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 > [AppIndicator](https://extensions.gnome.org/extension/615/appindicator-support/)
 > extension for the tray icon to show up.
 
+Wrusp prevents WhatsApp audio and video from leaving media controls in GNOME's
+notification panel. Playback is controlled inside WhatsApp; desktop media
+keys do not control it. This requires `xdg-dbus-proxy`, which is normally
+installed with WebKitGTK. If it is missing, Wrusp logs the reason and keeps
+running without the filter.
+
 ### Video and audio
 
 The engine plays whatever GStreamer can decode on your system. WhatsApp sends

@@ -543,8 +543,8 @@ const YA_ORDENADO: &str = r#"
 </script>
 "#;
 
-/// Copia de `permissions::apagar_sesion_multimedia` (los ejemplos no ven los
-/// módulos del binario): apaga la característica MediaSession del motor.
+/// Ajuste antiguo de Wrusp: apaga la API MediaSession del motor. No bloquea
+/// por sí solo los controles MPRIS; la aplicación usa ahora `mpris.rs`.
 fn apagar_sesion_multimedia(settings: &webkit2gtk::Settings) {
     use std::ffi::CStr;
     use webkit2gtk::glib::translate::ToGlibPtr;

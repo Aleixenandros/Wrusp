@@ -57,6 +57,12 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 > **GNOME**: para ver el icono de bandeja necesitas la extensión
 > [AppIndicator](https://extensions.gnome.org/extension/615/appindicator-support/).
 
+Wrusp evita que los audios y vídeos de WhatsApp acumulen controles multimedia
+en el panel de GNOME. La reproducción se controla dentro de WhatsApp; las
+teclas multimedia del escritorio no la controlan. Para ello necesita
+`xdg-dbus-proxy`, que normalmente ya se instala con WebKitGTK. Si falta, Wrusp
+lo indica en su registro y continúa funcionando sin ese filtro.
+
 ### Vídeo y audio
 
 El motor reproduce lo que sepa decodificar GStreamer en tu sistema. WhatsApp

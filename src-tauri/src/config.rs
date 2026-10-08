@@ -256,10 +256,16 @@ pub fn fijar_para_el_motor(variable: &'static str, valor: &str) {
 
 /// El abridor del escritorio (`xdg-open`), sin las variables del motor.
 fn abridor() -> std::process::Command {
-    let mut orden = std::process::Command::new(ABRIDOR);
+    comando_del_escritorio(ABRIDOR)
+}
+
+fn comando_del_escritorio(programa: &str) -> std::process::Command {
+    let mut orden = std::process::Command::new(programa);
     for variable in VARIABLES_DEL_MOTOR.lock().unwrap().iter() {
         orden.env_remove(variable);
     }
+    #[cfg(target_os = "linux")]
+    crate::mpris::restaurar_bus(&mut orden);
     orden
 }
 
@@ -1112,7 +1118,7 @@ pub fn open_external(url: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn pick_folder() -> Option<String> {
     // 1. Zenity (GNOME / GTK)
-    if let Ok(out) = std::process::Command::new("zenity")
+    if let Ok(out) = comando_del_escritorio("zenity")
         .args(["--file-selection", "--directory", "--title=Elegir carpeta"])
         .output()
     {
@@ -1124,7 +1130,7 @@ pub async fn pick_folder() -> Option<String> {
         }
     }
     // 2. Kdialog (KDE / Qt)
-    if let Ok(out) = std::process::Command::new("kdialog")
+    if let Ok(out) = comando_del_escritorio("kdialog")
         .args(["--getexistingdirectory", "--title", "Elegir carpeta"])
         .output()
     {
@@ -1136,7 +1142,7 @@ pub async fn pick_folder() -> Option<String> {
         }
     }
     // 3. Qarma (clon de zenity en Qt)
-    if let Ok(out) = std::process::Command::new("qarma")
+    if let Ok(out) = comando_del_escritorio("qarma")
         .args(["--file-selection", "--directory", "--title=Elegir carpeta"])
         .output()
     {

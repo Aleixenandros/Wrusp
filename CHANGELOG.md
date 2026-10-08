@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.22] — 2026-10-08
+
+### Corregido
+
+- **Los audios, vídeos y sonidos de WhatsApp dejan de acumular reproductores en GNOME.** Desactivar la API `MediaSession` no impedía que WebKitGTK 2.54 publicase controles multimedia. Wrusp filtra ahora ese registro con `xdg-dbus-proxy`, solo para su propia instancia. El audio, el vídeo y los avisos siguen funcionando; la reproducción se controla dentro de WhatsApp, sin controles del escritorio ni teclas multimedia. Los reproductores que ya estaban acumulados se retiran al salir completamente de la versión anterior.
+
 ## [0.4.21] — 2026-09-29
 
 ### Añadido

@@ -259,6 +259,7 @@ jobs:
           arch = x86_64
           depend = gtk3
           depend = libayatana-appindicator
+          depend = xdg-dbus-proxy
           EOF
 
           # Construye .pkg.tar.zst (PKGINFO primero por convención)

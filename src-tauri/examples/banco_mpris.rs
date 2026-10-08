@@ -4,12 +4,13 @@
 //! open files» mientras corría `banco_memoria`, que crea 800 elementos de
 //! vídeo, y con él cayó la sesión de escritorio entera. Ese bus admite 1.024
 //! descriptores. WebKitGTK publica un reproductor MPRIS por cada sesión
-//! multimedia (`org.mpris.MediaPlayer2.webkit.instance…`), y los bancos no
-//! desactivaban esa función como hace Wrusp.
+//! multimedia (`org.mpris.MediaPlayer2.webkit.instance…`). Apagar la API
+//! `MediaSession`, como intentaba Wrusp, no evita esas conexiones.
 //!
 //! Este banco mide, con **muy pocos** vídeos y un freno, cuántas conexiones
-//! al bus abre cada patrón de uso, con la función activa y desactivada como en
-//! Wrusp, y lista los identificadores reales de la función en este WebKit.
+//! al bus abre cada patrón de uso con la API desactivada, y lista los
+//! identificadores reales de la función en este WebKit. Es un diagnóstico de
+//! conexiones: no prueba el filtro de Wrusp, que ahora está en `src/mpris.rs`.
 //! Si el bus crece más de lo previsto, se para en seco.
 //!
 //! ```sh
@@ -121,8 +122,8 @@ fn contar_bus() -> (usize, usize) {
 }
 
 /// Identificadores de funciones que contienen «MediaSession» y, si se pide,
-/// desactiva la que se llame exactamente «MediaSession», que es lo que hace
-/// `permissions::apagar_sesion_multimedia` en Wrusp. Devuelve si la encontró.
+/// desactiva las indicadas. Reproduce el ajuste antiguo de Wrusp, que no
+/// basta para impedir los controles MPRIS en WebKitGTK 2.54.
 fn funciones(settings: &webkit2gtk::Settings, apagar: &[&str]) -> (Vec<String>, Vec<String>) {
     use std::ffi::CStr;
     use webkit2gtk::glib::translate::ToGlibPtr;
@@ -398,7 +399,7 @@ fn main() {
     let pagina = pagina.replace("SCRIPT_WRUSP", "");
     let _ = script_video; // el script de Wrusp no cambia nada aquí (medido)
     correr(
-        "MediaSession apagada, como en Wrusp",
+        "API MediaSession apagada (ajuste antiguo de Wrusp)",
         &["MediaSession"],
         &pagina,
         bus,

@@ -15,6 +15,8 @@ mod diagnostico;
 mod filedrop;
 mod icon;
 mod logs;
+#[cfg(target_os = "linux")]
+mod mpris;
 mod notifications;
 mod permissions;
 mod rail;
@@ -137,6 +139,9 @@ fn main() {
     // Lo primero de todo: desde aquí, stdout y stderr quedan en el fichero de
     // registro y los procesos del webview lo heredan.
     logs::init();
+
+    #[cfg(target_os = "linux")]
+    let _bus_multimedia = mpris::configurar(config::APP_IDENTIFIER);
 
     // Decodificación de vídeo por software (ver la función).
     preferir_decodificacion_por_software();
