@@ -117,7 +117,7 @@ jobs:
       # seguridad o una licencia fuera de la lista no llegan a un paquete
       # aunque la versión se etiquete sin pasar por una PR.
       - name: Instalar cargo-deny
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         with:
           tool: cargo-deny
 
