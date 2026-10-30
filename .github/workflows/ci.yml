@@ -191,7 +191,7 @@ jobs:
           toolchain: ${{ steps.rust.outputs.channel }}
 
       - name: Install cargo-deny + cargo-cyclonedx
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         with:
           tool: cargo-deny,cargo-cyclonedx
 
