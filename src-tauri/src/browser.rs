@@ -707,6 +707,61 @@ pub fn fix_large_mp4_blobs_script() -> String {
     }
   }
 
+  // ── Vigía de los GIF ─────────────────────────────────────────────────────
+  // En uso real, a veces un GIF se queda quieto a la vista o tarda en
+  // arrancar. Ninguno de los casos de `banco_gif` lo reproduce (entrar a la
+  // vista o fuera de ella, desplazarse y volver, filas que salen del
+  // documento y vuelven, una fila oculta que se revela, ocultar la vista,
+  // un <video> reciclado con otro GIF), así que no se sabe qué lo para. Lo
+  // que sí se sabe es que quien lo reanuda —WhatsApp o este script— depende
+  // de un observador de intersección, que en WebKitGTK no siempre avisa
+  // (ADR-040). El vigía mira cada segundo los vídeos silenciosos con
+  // `autoplay` que están a la vista con datos: uno en pausa dos tics
+  // seguidos se reanuda y se anota cómo estaba; uno sin pausar cuyo tiempo
+  // no avanza lo tiene suspendido el motor, que para los vídeos silenciosos
+  // que cree fuera del viewport (`managePlayerSuspend`), y desde aquí solo se
+  // puede anotar. Solo silenciosos: un vídeo con sonido lo arranca quien lo
+  // pulsa, y a uno pausado por el usuario no se le lleva la contraria.
+  const VIGIA_CADA = 1000;
+  let avisosVigia = 0;
+  const avisarVigia = (texto) => {
+    if (avisosVigia < 8) { avisosVigia++; anotar(texto); }
+  };
+  const aLaVista = (v) => {
+    const r = v.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight
+      && r.right > 0 && r.left < innerWidth;
+  };
+  setInterval(() => {
+    if (document.hidden) return;
+    for (const v of document.querySelectorAll('video[autoplay]')) {
+      if (!v.muted || !v.isConnected || v.ended || retenidaDe(v) !== undefined
+        || v.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !aLaVista(v)) {
+        delete v.__wruspQuieto;
+        continue;
+      }
+      const antes = v.__wruspQuieto;
+      const ahora = { t: v.currentTime, pausado: v.paused };
+      // Primer tic quieto, o algo ha cambiado desde el anterior: se espera.
+      if (!antes || antes.pausado !== ahora.pausado || (!ahora.pausado && antes.t !== ahora.t)) {
+        v.__wruspQuieto = ahora;
+        continue;
+      }
+      delete v.__wruspQuieto;
+      const detalle = ' (datos ' + v.readyState + ', red ' + v.networkState + ', t ' + ahora.t.toFixed(1) + ')';
+      if (ahora.pausado) {
+        pausadosPorWrusp.delete(v);
+        avisarVigia('GIF a la vista y en pausa: se reanuda' + detalle);
+        try {
+          const p = reproducirNativo.call(v);
+          if (p && p.catch) p.catch(() => {});
+        } catch (e) { /* sin gesto de usuario no siempre deja */ }
+      } else {
+        avisarVigia('GIF a la vista sin pausar y sin avanzar: el motor lo tiene suspendido' + detalle);
+      }
+    }
+  }, VIGIA_CADA);
+
   function medioDe(nodo) {
     if (nodo instanceof HTMLMediaElement) return nodo;
     if (nodo instanceof HTMLSourceElement && nodo.parentElement instanceof HTMLMediaElement)

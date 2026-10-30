@@ -277,6 +277,28 @@ pub fn runtime_script(own: &str) -> String {
   if (document.body) vigilarCapas();
   else document.addEventListener('DOMContentLoaded', vigilarCapas, {{ once: true }});
 
+  // ── Anchura que ve la página ────────────────────────────────
+  // WhatsApp coloca sus menús flotantes —el selector de reacciones, el menú
+  // de un mensaje— con `WAWebPopoverPosition`: parte del rectángulo del
+  // ancla y, si el menú no cabe, lo pega al borde derecho de `innerWidth`.
+  // Pero su raíz `#app` empieza donde acaba la barra, 60 px a la derecha, y
+  // un menú que WhatsApp cree que cabe justo se sale de `#app` por la
+  // derecha y se recorta: el selector de reacciones perdía el «+» de más
+  // emojis. Se le da a la página la anchura que de verdad ocupa, que es con
+  // la que debe hacer esas cuentas. `100vw` y las consultas de medios no
+  // cambian: siguen siendo la ventana entera, como hasta ahora.
+  if (window.__wruspSelf !== 'settings') {{
+    const anchura = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+    if (anchura && anchura.get && anchura.configurable) {{
+      Object.defineProperty(window, 'innerWidth', {{
+        configurable: true,
+        enumerable: anchura.enumerable,
+        get() {{ return Math.max(0, anchura.get.call(this) - st().width); }},
+        set: anchura.set,
+      }});
+    }}
+  }}
+
   // ── Atajos de teclado ───────────────────────────────────────
   // En `window` y en captura, que es antes que cualquier escuchador de la
   // página. Los de Wrusp son Ctrl y una tecla, sin Alt: en Linux los atajos de

@@ -127,6 +127,34 @@ fn pintar_con_la_cpu() {
     config::fijar_para_el_motor("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1");
 }
 
+/// Que el escritorio no restaure a los sonidos de WhatsApp un volumen guardado.
+///
+/// WirePlumber recuerda el volumen y el silencio de cada flujo de audio por
+/// nombre de aplicación y se lo vuelve a aplicar a cada flujo nuevo de esa
+/// aplicación (`state-stream.lua`, clave
+/// `Output/Audio:application.name:wrusp`). El motor pone a cada reproductor
+/// su propio volumen y silencio por el flujo de PulseAudio —un GIF va
+/// silenciado—, WirePlumber lo guarda como preferencia del usuario y de ahí
+/// en adelante las notas de voz, los vídeos y los avisos de WhatsApp nacen
+/// con ese volumen. En la instalación del usuario (30-10-2026) el estado
+/// guardado era volumen 0 y silencio: el flujo del sonido de mensaje enviado
+/// estaba vivo en PipeWire al 0 % mientras todo lo demás sonaba, y cambiar
+/// de dispositivo no lo arreglaba porque el problema no era el destino.
+///
+/// `state.restore-props=false` en el flujo le dice a WirePlumber que ni
+/// guarde ni restaure sus propiedades; el volumen lo decide la página, que
+/// es lo que hacen Chrome y Firefox. La variable la leen los clientes de
+/// PulseAudio (el `pulsesink` de GStreamer en los procesos web) y
+/// `pipewire-pulse` la deja en el nodo del flujo; comprobado con un flujo de
+/// prueba y `pactl list sink-inputs`. El icono, para que el panel de sonido
+/// enseñe el de Wrusp. Solo para los procesos del motor: un programa abierto
+/// desde Wrusp no debe heredarla (`fijar_para_el_motor`).
+#[cfg(target_os = "linux")]
+fn audio_sin_volumen_restaurado() {
+    config::fijar_para_el_motor("PULSE_PROP_state.restore-props", "false");
+    config::fijar_para_el_motor("PULSE_PROP_application.icon_name", "wrusp");
+}
+
 fn main() {
     // Ojo: NO fijar `WEBKIT_DISABLE_DMABUF_RENDERER`. La 0.2.1 lo hacía y con
     // él `requestVideoFrameCallback` no dispara nunca (medido: 0 callbacks
@@ -153,6 +181,11 @@ fn main() {
     // Pintado por CPU: la caché de texturas del de GPU no se vacía nunca
     // (ver la función).
     pintar_con_la_cpu();
+
+    // Volumen de los sonidos de WhatsApp sin la preferencia guardada por
+    // WirePlumber (ver la función).
+    #[cfg(target_os = "linux")]
+    audio_sin_volumen_restaurado();
 
     // Carpeta de temporales configurada por el usuario: debe aplicarse antes de
     // arrancar el webview, porque WebKit lee TMPDIR al lanzar sus procesos.
