@@ -707,6 +707,28 @@ pub fn fix_large_mp4_blobs_script() -> String {
     }
   }
 
+  // ── Cuánto tarda un GIF ──────────────────────────────────────────────────
+  // «Le cuesta arrancar»: se mide desde que WhatsApp asigna el blob hasta el
+  // primer fotograma, partido en espera en la cola de preparación, preparar
+  // la copia y arrancar el motor. Los cinco primeros de cada vista y los que
+  // pasen de dos segundos, hasta veinte líneas, para saber dónde se va el
+  // tiempo sin llenar el registro.
+  let arranquesAnotados = 0;
+  function medirArranque(medio, nodo, turno) {
+    const asignado = nodo.__wruspRetenidaEn;
+    if (asignado === undefined) return;
+    delete nodo.__wruspRetenidaEn;
+    const entregado = performance.now();
+    medio.addEventListener('playing', () => {
+      const total = performance.now() - asignado;
+      if (arranquesAnotados >= 20 || (arranquesAnotados >= 5 && total <= 2000)) return;
+      arranquesAnotados++;
+      anotar('GIF en marcha a los ' + Math.round(total) + ' ms de recibir el blob (cola '
+        + Math.round(turno - asignado) + ', preparación ' + Math.round(entregado - turno)
+        + ', arranque ' + Math.round(performance.now() - entregado) + ')');
+    }, { once: true });
+  }
+
   // ── Vigía de los GIF ─────────────────────────────────────────────────────
   // En uso real, a veces un GIF se queda quieto a la vista o tarda en
   // arrancar. Ninguno de los casos de `banco_gif` lo reproduce (entrar a la
@@ -913,6 +935,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
 
   function retener(nodo, url) {
     nodo.__wruspRetenida = url;
+    nodo.__wruspRetenidaEn = performance.now();
     // Un GIF se reproduce solo y necesita su fuente ya. React pone la fuente y
     // `autoplay` en la misma pasada y en cualquier orden, así que en la tarea
     // siguiente ya se sabe cuál de los dos casos es. Si `autoplay` llega
@@ -932,8 +955,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
     if (url === undefined) return Promise.resolve();
     const previa = esperas.get(nodo);
     if (previa && previa.url === url) return previa.promesa;
+    let turno = 0;
     const promesa = cola = cola
       .then(() => {
+        turno = performance.now();
         if (retenidaDe(nodo) !== url) return null;
         const medio = medioDe(nodo);
         if (!pedida && !(medio && medio.isConnected)) return null;
@@ -949,6 +974,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
         if (definitiva === url && !candidatos.has(url)) return;
         ponerUrl(nodo, definitiva, definitiva !== url ? url : null);
         const medio = medioDe(nodo);
+        if (medio && medio.autoplay && medio.muted) medirArranque(medio, nodo, turno);
         // Entregada a un elemento que no está en el documento: si no llega a
         // entrar, su reproductor no debe quedarse vivo hasta el recolector.
         if (medio === nodo && !nodo.isConnected) vigilarFuera(nodo, APARCAR_SIN_ENTRAR_TRAS);

@@ -177,7 +177,8 @@ fn handle_command(app: &AppHandle, origin: &str, url: &tauri::Url) {
                     eprintln!("wrusp: no se pudo cambiar de cuenta: {err}");
                 }
             }
-            "settings" | "add" => show_settings(&app),
+            "settings" => show_settings(&app),
+            "add" => abrir_alta(&app),
             "hide" => {
                 if let Some(window) = app.get_window(MAIN_WINDOW) {
                     let _ = window.hide();
@@ -230,17 +231,33 @@ fn handle_command(app: &AppHandle, origin: &str, url: &tauri::Url) {
             }
             other => eprintln!("wrusp: orden desconocida de la barra: {other}"),
         }
-        if action == "add" {
-            // La página de ajustes enfoca el campo de alta al recibir esto.
-            // Con la vista recién creada, esto llega antes que su `main.js`:
-            // la marca queda puesta y la página la atiende al arrancar.
-            if let Some(view) = app.get_webview(SETTINGS_VIEW) {
-                let _ = view.eval(
-                    "window.__wruspQuiereAlta = true; window.__wruspFocusAdd && window.__wruspFocusAdd()",
-                );
-            }
-        }
     });
+}
+
+/// Abre los ajustes con el campo de alta enfocado: el «+» de la barra.
+///
+/// La página de ajustes enfoca el campo al recibir la marca. Con la vista
+/// recién creada, esto llega antes que su `main.js`: la marca queda puesta y
+/// la página la atiende al arrancar.
+pub fn abrir_alta(app: &AppHandle) {
+    show_settings(app);
+    if let Some(view) = app.get_webview(SETTINGS_VIEW) {
+        let _ = view.eval(
+            "window.__wruspQuiereAlta = true; window.__wruspFocusAdd && window.__wruspFocusAdd()",
+        );
+    }
+}
+
+/// ¿Dibujan las páginas la barra? Solo cuando no hay barra nativa.
+fn barra_en_pagina() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !crate::rail_gtk::activa()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 /// Geometría de la ventana vista en el último evento, y cuándo se vio.
@@ -432,6 +449,14 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     app.manage(Unread(Mutex::new(std::collections::HashMap::new())));
     app.manage(SettingsGeneration(std::sync::atomic::AtomicU64::new(0)));
 
+    // La barra lateral, fuera de las páginas (ADR-052). Si no se puede, las
+    // vistas la dibujan dentro, como hasta la 0.4.24.
+    #[cfg(target_os = "linux")]
+    match crate::rail_gtk::instalar(app, &window) {
+        Ok(()) => eprintln!("wrusp: barra lateral nativa"),
+        Err(err) => eprintln!("wrusp: barra lateral inyectada en las páginas ({err})"),
+    }
+
     // Al abrir se entra en la primera cuenta: lo que quieres ver al arrancar
     // una app de mensajería son tus mensajes, no los ajustes. Sin cuentas, la
     // pantalla de ajustes es justo lo que hace falta para crear la primera.
@@ -513,6 +538,7 @@ fn create_settings_view(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
         })
+        .initialization_script(aislado(rail::mode_script(barra_en_pagina())))
         .initialization_script(aislado(rail::runtime_script(SETTINGS_VIEW)));
 
     let vista = window.add_child(
@@ -984,6 +1010,7 @@ fn create_account_view(app: &AppHandle, account: &Account) -> tauri::Result<()> 
         .initialization_script(aislado(browser::quiet_idle_audio_script()))
         .initialization_script(aislado(browser::hide_native_app_promo_script()))
         .initialization_script(aislado(theme::whatsapp_init_script(mode)))
+        .initialization_script(aislado(rail::mode_script(barra_en_pagina())))
         .initialization_script(aislado(rail::runtime_script(&account.id)))
         .initialization_script(aislado(crate::filedrop::SCRIPT.to_owned()))
         .initialization_script(aislado(crate::clipboard::SCRIPT.to_owned()))
@@ -1209,6 +1236,8 @@ pub fn close_account_view(app: &AppHandle, account_id: &str) {
 /// Redibuja la barra lateral en todas las vistas: se llama al añadir, renombrar
 /// o borrar cuentas, al cambiar de vista y al cambiar el tema.
 pub fn refresh_rails(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    crate::rail_gtk::refrescar(app);
     let Some(window) = app.get_window(MAIN_WINDOW) else {
         return;
     };

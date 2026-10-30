@@ -20,7 +20,7 @@ use crate::config::Account;
 pub const WIDTH: u32 = 60;
 
 /// Iniciales que se muestran en el avatar de una cuenta.
-fn initials(name: &str) -> String {
+pub fn initials(name: &str) -> String {
     let letters: String = name
         .split_whitespace()
         .take(2)
@@ -63,6 +63,13 @@ pub fn state_script(
     format!("window.__wruspState = {state}; window.__wruspRender && window.__wruspRender();")
 }
 
+/// Le dice a la vista si tiene que dibujar la barra (`true`) o si la barra es
+/// nativa y la página no debe pintar ni desplazar nada (`false`). Va antes
+/// que `runtime_script`.
+pub fn mode_script(en_pagina: bool) -> String {
+    format!("window.__wruspBarraEnPagina = {en_pagina};")
+}
+
 /// Maquinaria de la barra para la vista `own` (`settings` o el id de cuenta).
 pub fn runtime_script(own: &str) -> String {
     let own = serde_json::to_string(own).unwrap_or_else(|_| "\"\"".into());
@@ -71,6 +78,9 @@ pub fn runtime_script(own: &str) -> String {
   if (window.__wruspReady) return;
   window.__wruspReady = true;
   window.__wruspSelf = {own};
+  // Con la barra nativa (GTK, en Linux; ver `rail_gtk`) la página no dibuja
+  // nada ni se desplaza: quedan los atajos, el contador y el canal con Rust.
+  const barraEnPagina = window.__wruspBarraEnPagina !== false;
 
   // Las órdenes viajan como petición de red al esquema propio `wrusp://`, no
   // como navegación: dos navegaciones en el mismo instante se pisan y se
@@ -191,6 +201,7 @@ pub fn runtime_script(own: &str) -> String {
   }}
 
   function render() {{
+    if (!barraEnPagina) return;
     const s = st();
     ensureStyle();
     let rail = document.getElementById('wrusp-rail');
@@ -225,6 +236,7 @@ pub fn runtime_script(own: &str) -> String {
   // barra aparecía igual —el estado llega después por `eval` y vuelve a
   // pintarla—, pero el fallo dejaba a medias todo lo que va detrás.
   const arrancar = () => {{
+    if (!barraEnPagina) return;
     render();
     // WhatsApp es una SPA y puede vaciar el árbol al arrancar; si la barra
     // desaparece, se vuelve a poner.
@@ -267,7 +279,7 @@ pub fn runtime_script(own: &str) -> String {
     }}, 100);
   }};
   const vigilarCapas = () => {{
-    if (!document.body) return;
+    if (!barraEnPagina || !document.body) return;
     programarCorreccion();
     new MutationObserver(programarCorreccion).observe(document.body, {{
       childList: true,
@@ -287,7 +299,7 @@ pub fn runtime_script(own: &str) -> String {
   // emojis. Se le da a la página la anchura que de verdad ocupa, que es con
   // la que debe hacer esas cuentas. `100vw` y las consultas de medios no
   // cambian: siguen siendo la ventana entera, como hasta ahora.
-  if (window.__wruspSelf !== 'settings') {{
+  if (barraEnPagina && window.__wruspSelf !== 'settings') {{
     const anchura = Object.getOwnPropertyDescriptor(window, 'innerWidth');
     if (anchura && anchura.get && anchura.configurable) {{
       Object.defineProperty(window, 'innerWidth', {{

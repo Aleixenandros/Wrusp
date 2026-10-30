@@ -683,7 +683,81 @@ pub async fn diagnostic_report(
         &pantalla,
         &sistema_operativo(),
         &variables_multimedia(),
+        &audio_del_escritorio(),
     ))
+}
+
+/// Lo que el escritorio sabe del audio de Wrusp (ADR-051): lo que WirePlumber
+/// tiene guardado para los flujos de esta aplicación, si los flujos nuevos
+/// quedan fuera de esa restauración, y el silencio y el volumen de los que
+/// estén sonando ahora. Solo esos campos: la salida entera de `pactl` trae el
+/// nombre de la máquina y el del usuario, y el nombre del dispositivo, la
+/// dirección Bluetooth.
+#[cfg(target_os = "linux")]
+fn audio_del_escritorio() -> Vec<(String, String)> {
+    let mut filas = Vec::new();
+    let guardado = dirs::state_dir()
+        .map(|d| d.join("wireplumber").join("stream-properties"))
+        .and_then(|ruta| fs::read_to_string(ruta).ok())
+        .and_then(|texto| {
+            texto
+                .lines()
+                .find(|l| l.contains("application.name:wrusp="))
+                .map(|l| format!("`{}`", l.trim()))
+        });
+    filas.push((
+        "guardado por WirePlumber".to_string(),
+        guardado.unwrap_or_else(|| "nada".to_string()),
+    ));
+    filas.push((
+        "fuera de la restauración".to_string(),
+        match std::env::var("PULSE_PROP_state.restore-props") {
+            Ok(valor) => format!("sí (`state.restore-props={valor}`)"),
+            Err(_) => "no: la variable no está en el entorno".to_string(),
+        },
+    ));
+    let flujos = std::process::Command::new("pactl")
+        .env("LC_ALL", "C")
+        .args(["list", "sink-inputs"])
+        .output()
+        .ok()
+        .filter(|salida| salida.status.success())
+        .map(|salida| {
+            let texto = String::from_utf8_lossy(&salida.stdout).into_owned();
+            let mut lista = Vec::new();
+            for bloque in texto.split("Sink Input #") {
+                if !bloque.contains("application.name = \"wrusp\"") {
+                    continue;
+                }
+                let campo = |clave: &str| {
+                    bloque
+                        .lines()
+                        .find_map(|l| l.trim().strip_prefix(clave))
+                        .map(|v| v.trim().trim_matches('"').to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                };
+                let volumen = campo("Volume:");
+                let volumen = volumen.split('/').nth(1).unwrap_or("?").trim().to_string();
+                lista.push(format!(
+                    "silencio {}, volumen {volumen}, restore-props {}",
+                    campo("Mute:"),
+                    campo("state.restore-props = ")
+                ));
+            }
+            if lista.is_empty() {
+                "ninguno".to_string()
+            } else {
+                lista.join("; ")
+            }
+        })
+        .unwrap_or_else(|| "pactl no disponible".to_string());
+    filas.push(("flujos de Wrusp ahora".to_string(), flujos));
+    filas
+}
+
+#[cfg(not(target_os = "linux"))]
+fn audio_del_escritorio() -> Vec<(String, String)> {
+    Vec::new()
 }
 
 /// Nombre de la distribución, de `/etc/os-release`. Es lo primero que se
@@ -744,6 +818,7 @@ fn report_markdown(
     pantalla: &str,
     sistema: &str,
     variables: &[(String, String)],
+    audio: &[(String, String)],
 ) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut salida = String::from("### Diagnóstico de Wrusp\n\n");
@@ -792,6 +867,9 @@ fn report_markdown(
             .collect::<Vec<_>>()
             .join(", ");
         fila("Variables multimedia", lista);
+    }
+    for (clave, valor) in audio {
+        fila(&format!("Audio, {clave}"), valor.clone());
     }
     salida.push_str(
         "\n_Sin nombres de cuenta, identificadores ni contenido de mensajes. Las rutas personales aparecen como `~`._\n",
@@ -1694,6 +1772,7 @@ mod tests {
             "1100×720 px, escala 1",
             "Fedora Linux 44",
             &variables,
+            &[("guardado por WirePlumber".to_string(), "nada".to_string())],
         );
 
         for esperado in [

@@ -4,6 +4,17 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.25] — 2026-10-30
+
+### Cambiado
+
+- **La barra lateral es ahora un panel propio de la ventana, fuera de las páginas (Linux).** Hasta ahora era HTML inyectado en cada vista: la raíz de WhatsApp se desplazaba 60 px con CSS, un observador vigilaba todo el documento para recolocar los visores a pantalla completa, y cualquier menú que WhatsApp midiese contra su ventana salía desplazado o recortado. Ahora la barra es un widget GTK a la izquierda de las vistas y WhatsApp ocupa exactamente el ancho que ve: sin CSS inyectado, sin observador, sin el apaño de la anchura de la 0.4.24. Mismo aspecto, mismos atajos (Ctrl+1…9, Ctrl+Tab, Ctrl+U, Ctrl+P), mismos colores e insignias. Si el panel no pudiera instalarse, las vistas vuelven a dibujar la barra dentro como antes; `WRUSP_BARRA_INYECTADA=1` en el entorno fuerza ese modo. En Windows y macOS no cambia nada.
+
+### Añadido
+
+- **El informe de diagnóstico incluye el audio**: lo que WirePlumber tiene guardado para los flujos de Wrusp, si los flujos nuevos quedan fuera de esa restauración, y el silencio y el volumen de los que estén sonando. Habría señalado en un minuto la causa del audio al 0 % de la 0.4.24. Sin nombres de dispositivo ni de máquina.
+- **El registro mide cuánto tarda un GIF en arrancar** desde que WhatsApp le asigna el vídeo: espera en la cola de preparación, preparación de la copia y arranque del motor. Los cinco primeros de cada vista y los que pasen de dos segundos, hasta veinte líneas.
+
 ## [0.4.24] — 2026-10-30
 
 ### Corregido

@@ -20,6 +20,8 @@ mod mpris;
 mod notifications;
 mod permissions;
 mod rail;
+#[cfg(target_os = "linux")]
+mod rail_gtk;
 mod runtime;
 mod shell;
 mod theme;
