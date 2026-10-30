@@ -4,6 +4,18 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.24] — 2026-10-30
+
+### Corregido
+
+- **Los sonidos de WhatsApp vuelven a oírse, y por el dispositivo que toque.** WirePlumber guarda el volumen y el silencio de cada flujo de audio por nombre de aplicación y se los vuelve a aplicar al siguiente flujo de esa aplicación; el motor silencia el flujo de cada GIF, el escritorio lo guardaba como preferencia de Wrusp y de ahí en adelante las notas de voz, los vídeos y los avisos nacían al 0 %, con cualquier dispositivo. Los flujos de Wrusp quedan ahora fuera de esa restauración (`state.restore-props=false`): el volumen lo decide la página, como en Chrome y Firefox, y seguir al dispositivo por defecto (altavoces, auriculares Bluetooth) ya no depende de un estado guardado. El panel de sonido enseña además el icono de Wrusp.
+- **El selector de reacciones ya no se recorta por la derecha.** WhatsApp coloca sus menús flotantes con el ancho de la ventana, pero su raíz empieza donde acaba la barra lateral, 60 px a la derecha, y un menú pegado al borde se salía y se cortaba sin el «+» de más emojis. Las vistas de cuenta le dan a la página la anchura que de verdad ocupa; `100vw` y las consultas de medios no cambian.
+- **Un GIF que se quede parado a la vista se reanuda solo.** Un vigía mira cada segundo los vídeos silenciosos con reproducción automática que están a la vista con datos: uno en pausa dos tics seguidos se reanuda y queda anotado en el registro cómo estaba; uno sin pausar cuyo tiempo no avanza lo tiene suspendido el motor y se anota, porque desde la página no se puede tocar. El banco nuevo `banco_gif` recorre doce casos (entrar a la vista o fuera de ella, desplazarse y volver, filas que salen y vuelven, una fila oculta que se revela, ocultar la vista, un reproductor reciclado) y en todos los GIF se reproducen y se reanudan; el caso que falla en uso real sigue sin reproducirse, y el registro dirá cómo estaba el vídeo cuando pase.
+
+### Mantenimiento
+
+- **`cargo deny` vuelve a pasar.** `zvariant`, `zvariant_derive` y `zbus_names` se fundieron en zbus 6 y sus crates sueltos quedaron archivados; Wrusp sigue con zbus 5 porque `tauri-plugin-single-instance` lo exige, y los tres avisos quedan documentados como excepción hasta que ese plugin migre.
+
 ## [0.4.23] — 2026-10-08
 
 ### Corregido

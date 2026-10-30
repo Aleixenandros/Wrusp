@@ -28,6 +28,13 @@ ignore = [
   "RUSTSEC-2025-0081",
   "RUSTSEC-2025-0098",
   "RUSTSEC-2025-0100",
+  # zvariant, zvariant_derive y zbus_names se fundieron en zbus 6 y sus crates
+  # sueltos se archivaron (2026-10-16). Wrusp va con zbus 5 porque
+  # tauri-plugin-single-instance 2.5.x exige `zbus ^5.9`; migrar cuando ese
+  # plugin salte a zbus 6. Detectado 2026-10-23 en los PR de Dependabot #23 y #24.
+  "RUSTSEC-2026-0370",
+  "RUSTSEC-2026-0371",
+  "RUSTSEC-2026-0372",
 ]
 
 [licenses]
