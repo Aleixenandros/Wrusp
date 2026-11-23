@@ -4,6 +4,12 @@ Todas las novedades destacables de Wrusp.
 
 Los enlaces de descarga de cada versión están en [Releases](https://github.com/Aleixenandros/Wrusp/releases).
 
+## [0.4.26] — 2026-11-23
+
+### Corregido
+
+- **Los vídeos y GIF vuelven a reproducirse con el nuevo reproductor de WhatsApp Web (Linux).** WhatsApp ha activado su reproductor Comet (`WAWebVideoPlayerX` / `WAWebVideo`), que monta la etiqueta `<video muted playsinline>` en el documento sin el atributo DOM `autoplay`, le asigna el `blob:` después y espera a que el motor emita `loadedmetadata` o `loadeddata` antes de mostrar los controles o llamar a `play()`. Como Wrusp retenía la fuente de cualquier `<video>` sin `autoplay` hasta que alguien llamase a `play()`, ninguno de los dos daba el primer paso y el reproductor quedaba bloqueado sin fuente ni controles. Ahora los `<video>` silenciosos ya conectados al documento reciben su fuente `data:` en cola al asignárseles el `blob:`, y el observador de visibilidad y el vigía de GIF los tratan igual que a los que llevan `autoplay`.
+
 ## [0.4.25] — 2026-10-30
 
 ### Cambiado

@@ -680,14 +680,17 @@ pub fn fix_large_mp4_blobs_script() -> String {
           continue;
         }
         if (!entrada.isIntersecting) {
-          if (medio.autoplay && !medio.paused) {
+          if (entregaAutomatica(medio) && !medio.paused) {
             pausadosPorWrusp.add(medio);
             try { medio.pause(); } catch (e) { /* el medio ya no está */ }
           }
           continue;
         }
         // Un GIF que se quedó sin turno porque salió del chat antes de tiempo.
-        if (medio.autoplay) entregarTodas(medio, false);
+        if (entregaAutomatica(medio)) {
+          ponerPrecarga(medio, 'auto');
+          entregarTodas(medio, false);
+        }
         if (pausadosPorWrusp.has(medio)) {
           pausadosPorWrusp.delete(medio);
           if (medio.paused && !medio.ended) {
@@ -756,8 +759,8 @@ pub fn fix_large_mp4_blobs_script() -> String {
   };
   setInterval(() => {
     if (document.hidden) return;
-    for (const v of document.querySelectorAll('video[autoplay]')) {
-      if (!v.muted || !v.isConnected || v.ended || retenidaDe(v) !== undefined
+    for (const v of document.querySelectorAll('video')) {
+      if (!entregaAutomatica(v) || !v.muted || !v.isConnected || v.ended || retenidaDe(v) !== undefined
         || v.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !aLaVista(v)) {
         delete v.__wruspQuieto;
         continue;
@@ -933,16 +936,36 @@ pub fn fix_large_mp4_blobs_script() -> String {
     return true;
   }
 
+  // ¿Es un medio que necesita su fuente sin esperar a `play()`?
+  // Hasta finales de 2026 bastaba con mirar `medio.autoplay`, pero el nuevo
+  // reproductor de WhatsApp (`WAWebVideo` / Comet `VideoPlayerX`) monta
+  // `<video muted playsinline>` sin el atributo DOM `autoplay`, asigna `src`
+  // tras montar el componente (cuando `src` antes era vacío o en `useEffect`)
+  // y espera `loadedmetadata` o `loadeddata` para mostrar los controles o
+  // llamar a `play()`. Los adjuntos inactivos del banco `banco_faststart` se
+  // asignan antes de entrar al DOM (`!medio.isConnected` en el momento de
+  // `retener`) y siguen retenidos hasta `play()`.
+  function entregaAutomatica(medio) {
+    return !!(medio && (medio.autoplay || medio.__wruspEntregaAuto));
+  }
+
   function retener(nodo, url) {
     nodo.__wruspRetenida = url;
     nodo.__wruspRetenidaEn = performance.now();
-    // Un GIF se reproduce solo y necesita su fuente ya. React pone la fuente y
-    // `autoplay` en la misma pasada y en cualquier orden, así que en la tarea
-    // siguiente ya se sabe cuál de los dos casos es. Si `autoplay` llega
-    // después, lo entrega su propio envoltorio.
+    const medioAhora = medioDe(nodo);
+    if (medioAhora && medioAhora.isConnected && medioAhora.muted && !medioAhora.__wruspRetenerManual) {
+      medioAhora.__wruspEntregaAuto = true;
+    }
+    // Un GIF o un vídeo del reproductor Comet necesita su fuente ya. React
+    // pone la fuente y `autoplay` en la misma pasada y en cualquier orden,
+    // así que en la tarea siguiente ya se sabe cuál de los casos es. Si
+    // `autoplay` llega después, lo entrega su propio envoltorio.
     setTimeout(() => {
       const medio = medioDe(nodo);
-      if (retenidaDe(nodo) === url && medio && medio.autoplay) entregar(nodo, false);
+      if (retenidaDe(nodo) === url && entregaAutomatica(medio)) {
+        ponerPrecarga(medio, 'auto');
+        entregar(nodo, false);
+      }
     }, 0);
   }
 
@@ -974,7 +997,7 @@ pub fn fix_large_mp4_blobs_script() -> String {
         if (definitiva === url && !candidatos.has(url)) return;
         ponerUrl(nodo, definitiva, definitiva !== url ? url : null);
         const medio = medioDe(nodo);
-        if (medio && medio.autoplay && medio.muted) medirArranque(medio, nodo, turno);
+        if (medio && entregaAutomatica(medio) && medio.muted) medirArranque(medio, nodo, turno);
         // Entregada a un elemento que no está en el documento: si no llega a
         // entrar, su reproductor no debe quedarse vivo hasta el recolector.
         if (medio === nodo && !nodo.isConnected) vigilarFuera(nodo, APARCAR_SIN_ENTRAR_TRAS);
@@ -1079,7 +1102,10 @@ pub fn fix_large_mp4_blobs_script() -> String {
   function devolver(medio) {
     if (retenidaDe(medio) === undefined || tieneFuenteReal(medio)) return;
     vigilarVisibilidad(medio);
-    if (medio.autoplay) entregarTodas(medio, false);
+    if (entregaAutomatica(medio)) {
+      ponerPrecarga(medio, 'auto');
+      entregarTodas(medio, false);
+    }
   }
 
   // ── Fallos: se anotan y no se tocan ──────────────────────────────────────

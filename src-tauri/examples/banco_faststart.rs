@@ -755,6 +755,7 @@ const RETENIDA: &str = r#"
     const espera = (ms) => new Promise((l) => setTimeout(l, ms));
     const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
     const v = document.getElementById('v');
+    v.__wruspRetenerManual = true;
     let errores = 0;
     v.addEventListener('error', () => errores++);
     // `currentSrc` es la fuente que tiene el motor, y el script no la disfraza.
@@ -1136,6 +1137,46 @@ const SONDA_WHATSAPP: &str = r#"
 </script>
 "#;
 
+/// Maqueta 15 — el reproductor actual de WhatsApp (`WAWebVideo.react` y Comet
+/// `VideoPlayerX`): monta `<video muted playsinline>` en el documento **sin**
+/// el atributo DOM `autoplay`, asigna el `blob:` después de montarlo (con
+/// `setAttribute('src', url)` o `v.src = url`) y espera a `loadedmetadata` o
+/// `loadeddata` antes de llamar a `play()` o de habilitar los controles. Si
+/// Wrusp retiene la fuente esperando `play()` por no ver `v.autoplay === true`,
+/// `loadedmetadata` no llega nunca y el reproductor queda bloqueado.
+const REPRODUCTOR_COMET: &str = r#"
+<div id="visor"><video muted playsinline style="width:320px"></video></div>
+<script>SCRIPT</script>
+<script>
+  (async () => {
+    const bruto = atob(MP4_BASE64);
+    const bytes = new Uint8Array(bruto.length);
+    for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+    const v = document.querySelector('#visor video');
+    let metadatos = false, datos = false, errores = 0;
+    v.addEventListener('error', () => errores++);
+    v.addEventListener('loadedmetadata', () => {
+      metadatos = v.duration > 0 && v.videoWidth > 0;
+      // Como `WAWebMessageGif.react`: solo llama a `play()` cuando `F.current`
+      // (`onLoadedMetadata`) ya se ha disparado.
+      if (metadatos) v.play().catch(() => {});
+    });
+    v.addEventListener('loadeddata', () => { datos = true; });
+    // Como `VideoPlayerProgressiveImplementationEngine`: `setAttribute('src', url)`
+    // sobre un `<video muted playsinline>` ya conectado y sin `autoplay`.
+    v.setAttribute('src', url);
+    await new Promise((l) => setTimeout(l, 5000));
+    informe([
+      ['recibe metadatos sin atributo autoplay', metadatos && datos],
+      ['arranca al llamar a play() desde loadedmetadata', !v.paused && v.currentTime > 0.3],
+      ['la fuente entregada es data:', v.currentSrc.startsWith('data:')],
+      ['sin errores de medio', errores === 0 && !v.error],
+    ], 't=' + v.currentTime.toFixed(2) + ' dur=' + (v.duration || 0).toFixed(1) + ' dims=' + v.videoWidth + 'x' + v.videoHeight);
+  })();
+</script>
+"#;
+
 /// Descriptores del `dbus-broker` de la sesión de este usuario. Cada `<video>`
 /// con fuente abre una conexión propia al bus y no la suelta hasta que el
 /// recolector destruye el elemento (ADR-042): un banco con cientos de vídeos
@@ -1379,6 +1420,11 @@ fn main() {
             correr(
                 "La sonda de WhatsApp mide el vídeo sin reproducirlo",
                 &SONDA_WHATSAPP.replace("MP4_BASE64", &incrustado),
+                fallos.clone(),
+            );
+            correr(
+                "Reproductor Comet sin atributo autoplay recibe metadatos y reproduce",
+                &REPRODUCTOR_COMET.replace("MP4_BASE64", &incrustado),
                 fallos.clone(),
             );
             if let Some(ordenado) = video_ordenado() {
